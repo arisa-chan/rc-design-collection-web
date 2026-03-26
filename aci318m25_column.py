@@ -12,7 +12,7 @@ Based on:
 
 @author: Enhanced by AI Assistant  
 @date: 2024
-@version: 1.1 (Iterative Design Engine Update)
+@version: 1.2 (Distinct Transverse Yield Strength Update)
 """
 
 import math
@@ -269,7 +269,7 @@ class ACI318M25ColumnDesign:
         Uses steel stress of 1.25fy and strength reduction factor phi = 1.0.
         """
         fc_prime = material_props.fc_prime
-        fy_pr = 1.25 * material_props.fy  # Probable yield strength
+        fy_pr = 1.25 * material_props.fy  # Probable yield strength (Longitudinal)
         Es = 200000.0
         ecu = 0.003
         
@@ -354,7 +354,7 @@ class ACI318M25ColumnDesign:
         Estimate nominal flexural strength (Mnc) for Strong-Column/Weak-Beam check using 3D Strain-Compatibility.
         """
         fc_prime = material_props.fc_prime
-        fy = material_props.fy
+        fy = material_props.fy # Longitudinal
         Es = 200000.0
         ecu = 0.003
         
@@ -445,8 +445,6 @@ class ACI318M25ColumnDesign:
         As_required = As_min
         
         if loads.load_condition != LoadCondition.AXIAL_ONLY:
-            # FIX: Unit mismatch (Moment in kN-m, axial in kN, width in mm)
-            # Converted moment to kN-mm for proper ratio comparison
             moment_ratio = abs(loads.moment_x * 1000) / (loads.axial_force * geometry.width / 6) if loads.axial_force > 0 else 2.0
             if moment_ratio > 1.0:
                 As_additional = self._calculate_additional_steel_for_moment(
@@ -510,7 +508,7 @@ class ACI318M25ColumnDesign:
             )
             
             fc_prime = material_props.fc_prime
-            fyt = material_props.fy
+            fyt = material_props.fyt # Uses Transverse Yield Strength
             Ag = geometry.width * geometry.depth
             
             bc_x = geometry.depth - 2 * geometry.cover
@@ -545,7 +543,7 @@ class ACI318M25ColumnDesign:
 
         # SHEAR REQUIREMENTS
         fc_prime = material_props.fc_prime
-        fy_tie = material_props.fy
+        fy_tie = material_props.fyt # Uses Transverse Yield Strength
         phi_v = self.phi_factors['shear']
         A_tie_leg = self.aci.get_bar_area(tie_size)
         
@@ -597,15 +595,15 @@ class ACI318M25ColumnDesign:
             raise ValueError("Spiral reinforcement only applicable to circular columns")
         
         fc_prime = material_props.fc_prime
-        fy = material_props.fy
+        fyt = material_props.fyt # Uses Transverse Yield Strength
         
         dc = geometry.width - 2 * geometry.cover
         Ac = math.pi * (dc / 2) ** 2 
         Ag = math.pi * (geometry.width / 2) ** 2
         
-        rho_s = 0.45 * (Ag / Ac - 1.0) * (fc_prime / fy)
+        rho_s = 0.45 * (Ag / Ac - 1.0) * (fc_prime / fyt)
         
-        rho_s_min = self.confinement_requirements['min_spiral_ratio'] * (fc_prime / fy)
+        rho_s_min = self.confinement_requirements['min_spiral_ratio'] * (fc_prime / fyt)
         rho_s = max(rho_s, rho_s_min)
         
         spiral_bar = 'D10'
@@ -637,7 +635,7 @@ class ACI318M25ColumnDesign:
         Calculate maximum allowable nominal axial capacity (Pn,max)
         """
         fc_prime = material_props.fc_prime
-        fy = material_props.fy
+        fy = material_props.fy # Longitudinal
         
         if geometry.shape == ColumnShape.RECTANGULAR:
             Ag = geometry.width * geometry.depth
@@ -698,7 +696,7 @@ class ACI318M25ColumnDesign:
         Calculate P-M interaction ratio using rigorous 3D Bar-by-Bar Strain-Compatibility.
         """
         fc_prime = material_props.fc_prime
-        fy = material_props.fy
+        fy = material_props.fy # Longitudinal
         Es = 200000.0  
         ecu = 0.003   
         
@@ -821,7 +819,7 @@ class ACI318M25ColumnDesign:
                                              geometry: ColumnGeometry,
                                              material_props: MaterialProperties) -> float:
         """Calculate additional steel needed for moment resistance"""
-        fy = material_props.fy
+        fy = material_props.fy # Longitudinal
         
         if geometry.shape == ColumnShape.RECTANGULAR:
             lever_arm = 0.8 * geometry.depth
@@ -895,7 +893,7 @@ class ACI318M25ColumnDesign:
             return 0.0, 0.0
             
         fc_prime = material_props.fc_prime
-        fy_tie = material_props.fy
+        fy_tie = material_props.fyt # Uses Transverse Yield Strength
         phi_v = self.phi_factors['shear']
         
         transverse_area = self.aci.get_bar_area(transverse_bar)
