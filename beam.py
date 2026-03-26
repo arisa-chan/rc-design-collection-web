@@ -368,20 +368,20 @@ def setup_beam_routes(app):
                             air.Div(air.Label("Main bar yield strength (MPa)"), air.Input(type="number", name="fy", value=str(data.fy), step="any", required=True), class_="form-group"),
                             air.Div(air.Label("Stirrup yield strength (MPa)"), air.Input(type="number", name="fyt", value=str(data.fyt), step="any", required=True), class_="form-group"),
                             air.Div(air.Label("Moment frame system"), air.Select(air.Option("Ordinary", value="ordinary", selected=(data.frame_system == "ordinary")), air.Option("Intermediate", value="intermediate", selected=(data.frame_system == "intermediate")), air.Option("Special (SMF)", value="special", selected=(data.frame_system == "special")), name="frame_system"), class_="form-group"),
-                            air.Div(air.Label("Main bar diameter"), air.Select(*[air.Option(opt, selected=(data.pref_main == opt)) for opt in ["D16", "D20", "D25", "D28", "D32"]], name="pref_main"), class_="form-group"),
-                            air.Div(air.Label("Stirrup diameter"), air.Select(*[air.Option(opt, selected=(data.pref_stirrup == opt)) for opt in ["D10", "D12", "D16"]], name="pref_stirrup"), class_="form-group"),
+                            air.Div(air.Label("Main bar diameter"), air.Select(*[air.Option(opt, selected=(data.pref_main == opt)) for opt in ["D10", "D12", "D16", "D20", "D25", "D28", "D32", "D36"]], name="pref_main"), class_="form-group"),
+                            air.Div(air.Label("Stirrup diameter"), air.Select(*[air.Option(opt, selected=(data.pref_stirrup == opt)) for opt in ["D10", "D12", "D16", "D20"]], name="pref_stirrup"), class_="form-group"),
                             class_="grid-3"
                         ), class_="card"
                     ),
                     air.Div(
-                        air.H2("Section Forces (Demand)"),
+                        air.H2("Loads"),
                         air.Div(
                             render_force_inputs("Left support", "left", data, show_gravity=True),
                             render_force_inputs("Midspan", "mid", data, show_deflection=True),
                             render_force_inputs("Right support", "right", data, show_gravity=True),
                             class_="grid-3"
                         ),
-                        air.Button("Analyze & View Report ✨", type="submit", style="width: 100%; font-size: 18px; margin-top: 32px;"),
+                        air.Button("Perform Design", type="submit", style="width: 100%; font-size: 18px; margin-top: 32px;"),
                         class_="card"
                     ),
                     method="post", action="/beam/design"
