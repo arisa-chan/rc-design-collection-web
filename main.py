@@ -29,7 +29,7 @@ def index(request: air.Request):
                     # Beam Designer Card (Active)
                     air.Div(
                         air.H3("RC Beam Designer"),
-                        air.P("Current release: v0.8 beta.", style="margin-bottom: 24px;"),
+                        air.P("Design of RC beams including flexure, combined shear-torsion, serviceability checks, seismic detailing provisions, and detailed quantity takeoffs.", style="margin-bottom: 24px;"),
                         air.A("Launch", href="/beam", class_="button", style="width: 100%; box-sizing: border-box;"),
                         class_="card"
                     ),
@@ -37,7 +37,7 @@ def index(request: air.Request):
                     # Column Designer Card (Placeholder for future)
                     air.Div(
                         air.H3("RC Column Designer"),
-                        air.P("Current release: v0.4 alpha. Please expect bugs, wrong results, and/or missing features. Refinements ongoing.", style="color: var(--text-muted); margin-bottom: 24px;"),
+                        air.P("Design of RC beams including axial, biaxial bending, bi-directional shear, seismic detailing provisions, and detailed quantity takeoffs.", style="color: var(--text-muted); margin-bottom: 24px;"),
                         air.A("Launch", href="/column", class_="button", style="width: 100%; box-sizing: border-box;"),
                         class_="card"
                     ),
@@ -45,7 +45,7 @@ def index(request: air.Request):
                     # Slab Designer Card (Placeholder for future)
                     air.Div(
                         air.H3("RC Slab Designer", style="color: var(--text-muted);"),
-                        air.P("Still cooking...", style="color: var(--text-muted); margin-bottom: 24px;"),
+                        air.P("Design of RC slabs including flexure, punching shear, and detailed quantity takeoffs.", style="color: var(--text-muted); margin-bottom: 24px;"),
                         air.A("Coming Soon", href="#", class_="button secondary", style="width: 100%; box-sizing: border-box; pointer-events: none; opacity: 0.5;"),
                         class_="card",
                         style="background: #f9fafb; border-color: #e5e7eb;"
@@ -53,8 +53,8 @@ def index(request: air.Request):
                     
                     # Footing Designer Card (Placeholder for future)
                     air.Div(
-                        air.H3("RC Isolated Footing Designer", style="color: var(--text-muted);"),
-                        air.P("Still cooking...", style="color: var(--text-muted); margin-bottom: 24px;"),
+                        air.H3("Isolated Footings", style="color: var(--text-muted);"),
+                        air.P("Design of RC isolated footings including flexure, wide beam and punching shear, settlement, bearing pressure, and detailed quantity takeoffs.", style="color: var(--text-muted); margin-bottom: 24px;"),
                         air.A("Coming Soon", href="#", class_="button secondary", style="width: 100%; box-sizing: border-box; pointer-events: none; opacity: 0.5;"),
                         class_="card",
                         style="background: #f9fafb; border-color: #e5e7eb;"
