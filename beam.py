@@ -14,6 +14,7 @@ from shared import expressive_layout
 
 base_aci_lib = ACI318M25MemberLibrary()
 
+
 # ----------------------------------------------------------------------
 # 1. NATIVE AIR SCHEMA
 # ----------------------------------------------------------------------
@@ -32,117 +33,122 @@ class BeamDesignModel(BaseModel):
     frame_system: str = AirField(default="special")
     pref_main: str = AirField(default="D20")
     pref_stirrup: str = AirField(default="D10")
+    pref_torsion: str = AirField(default="D12")
     fc_prime: float = AirField(default=28.0)
     fy: float = AirField(default=420.0)
     fyt: float = AirField(default=420.0)
-    left_mu: float = AirField(default=300.0)
+
+    deflection_limit: str = AirField(default="240")
+
+    # Left Support Forces
+    left_mu_neg: float = AirField(default=300.0)
+    left_mu_pos: float = AirField(default=100.0)
     left_vu: float = AirField(default=180.0)
     left_tu: float = AirField(default=35.0)
     left_vg: float = AirField(default=80.0)
-    mid_mu: float = AirField(default=200.0)
+    left_mdead: float = AirField(default=0.0)
+    left_mlive: float = AirField(default=0.0)
+
+    # Midspan Forces
+    mid_mu_neg: float = AirField(default=50.0)
+    mid_mu_pos: float = AirField(default=200.0)
     mid_vu: float = AirField(default=50.0)
     mid_tu: float = AirField(default=5.0)
+    mid_mdead: float = AirField(default=70.0)
     mid_mlive: float = AirField(default=60.0)
-    mid_msus: float = AirField(default=100.0)
-    right_mu: float = AirField(default=280.0)
+
+    # Right Support Forces
+    right_mu_neg: float = AirField(default=280.0)
+    right_mu_pos: float = AirField(default=120.0)
     right_vu: float = AirField(default=170.0)
     right_tu: float = AirField(default=15.0)
     right_vg: float = AirField(default=80.0)
+    right_mdead: float = AirField(default=0.0)
+    right_mlive: float = AirField(default=0.0)
+
 
 # ----------------------------------------------------------------------
 # 2. OVERRIDE ENGINE & QTO ALGORITHMS
 # ----------------------------------------------------------------------
 class ControlledBeamDesign(ACI318M25BeamDesign):
-    def __init__(self, pref_main: str, pref_stirrup: str):
+    def __init__(self, pref_main: str, pref_stirrup: str, pref_torsion: str):
         super().__init__()
         self.pref_main = pref_main
         self.pref_stirrup = pref_stirrup
+        self.pref_torsion = pref_torsion
 
-    def _select_reinforcement_bars(self, As_required: float, beam_geometry: BeamGeometry, fy: float, stirrup_size: str = 'D10', aggregate_size: float = 25.0) -> list:
+    def _select_reinforcement_bars(self, As_required: float, beam_geometry: BeamGeometry, fy: float,
+                                   stirrup_size: str = 'D10', aggregate_size: float = 25.0) -> list:
         if As_required <= 0: return []
         area = self.aci.get_bar_area(self.pref_main)
         num_bars = max(2, math.ceil(As_required / area))
         return [self.pref_main] * num_bars
 
-    def design_transverse_reinforcement(self, vu, tu, mpr, gravity_shear, beam_geometry, material_props, main_reinforcement):
-        notes = []
-        fc_prime, fy, fyt = material_props.fc_prime, material_props.fy, material_props.fyt 
-        bw, d = beam_geometry.width, beam_geometry.effective_depth
-        phi_v, phi_t = self.phi_factors['shear'], self.phi_factors['torsion']
-        
-        Vu, Tu, Ve = vu * 1000, tu * 1e6, vu * 1000
-        if beam_geometry.frame_system == FrameSystem.SPECIAL and beam_geometry.clear_span > 0:
-            Ve = max((gravity_shear * 1000) + ((2 * mpr * 1e6) / beam_geometry.clear_span), Vu)
-            
-        Vc = 0.17 * math.sqrt(fc_prime) * bw * d
-        if beam_geometry.frame_system == FrameSystem.SPECIAL and (Ve - gravity_shear * 1000) > 0.5 * Ve: Vc = 0.0
+    def perform_complete_beam_design(self, mu_top: float, mu_bot: float, vu: float, beam_geometry: BeamGeometry,
+                                     material_props: MaterialProperties, service_moment: float = None, tu: float = 0.0,
+                                     gravity_shear: float = 0.0, is_support: bool = False, max_as_support: float = 0.0):
+        # We process the base design. Unification happens later across all three zones.
+        res = super().perform_complete_beam_design(mu_top, mu_bot, vu, beam_geometry, material_props, service_moment,
+                                                   tu, gravity_shear, is_support, max_as_support, self.pref_stirrup,
+                                                   self.pref_torsion)
+        return res
 
-        Vs_req = max(0.0, (Ve / phi_v) - Vc)
-        Av_over_s = Vs_req / (fyt * d)
-        
-        torsion_required = self.check_torsion_requirement(tu, beam_geometry, material_props)
-        props = self._calculate_torsional_properties(beam_geometry)
-        At_over_s, Al_req = 0.0, 0.0
-        
-        if torsion_required:
-            theta = math.radians(45)
-            At_over_s = Tu / (phi_t * 2 * props['Ao'] * fyt * (1 / math.tan(theta)))
-            At_over_s_min = max(At_over_s, 0.175 * bw / fyt)
-            Al_req = max(At_over_s * props['ph'] * (fyt / fy) * (1 / math.tan(theta))**2, (0.42 * math.sqrt(fc_prime) * props['Acp'] / fy) - (At_over_s_min * props['ph'] * (fyt / fy)), 0.0)
-
-        min_transverse = max(0.062 * math.sqrt(fc_prime) * bw / fyt, 0.35 * bw / fyt)
-        sizes = [self.pref_stirrup] 
-        max_legs = max(2, min(6, math.floor((bw - 2 * beam_geometry.cover) / 80) + 1))
-        
-        best_size, best_legs, s_req, found = self.pref_stirrup, 2, float('inf'), False
-        for size in sizes:
-            A_bar = self.aci.get_bar_area(size)
-            for n in range(2, max_legs + 1):
-                denom = At_over_s + (Av_over_s / n)
-                s_demand = A_bar / denom if denom > 0 else float('inf')
-                s_calc = min(s_demand, (n * A_bar) / min_transverse if min_transverse > 0 else float('inf'))
-                if s_calc >= 75.0:
-                    best_size, best_legs, s_req, found = size, n, s_calc, True
-                    break
-            if found: break
-                
-        if not found:
-            best_legs = max_legs
-            denom = At_over_s + (Av_over_s / best_legs)
-            s_req = self.aci.get_bar_area(best_size) / denom if denom > 0 else 50.0
-            
-        stirrup_size = f"{best_legs}-leg {best_size}" if best_legs > 2 else best_size
-        if best_legs > 2: notes.append(f"Demand exceeded 2-leg limits. Upgraded to {best_legs} legs.")
-
-        s_span_max = min(d / 4, 300.0) if (Ve / phi_v - Vc) > (0.33 * math.sqrt(fc_prime) * bw * d) else min(d / 2, 600.0)
-        if torsion_required: s_span_max = min(s_span_max, props['ph'] / 8, 300.0)
-        
-        s_hinge_max = min(d / 4, 6 * self.aci.get_bar_diameter(main_reinforcement.main_bars[0]), 150.0) if beam_geometry.frame_system == FrameSystem.SPECIAL else s_span_max 
-        s_hinge_actual = math.floor(min(s_req, s_hinge_max) / 10) * 10
-        s_span_actual = math.floor(min(s_req, s_span_max) / 10) * 10
-
-        Tn_provided = (2 * props['Ao'] * self.aci.get_bar_area(best_size) * fyt / s_span_actual) / 1e6 if (torsion_required and s_span_actual > 0) else 0.0
-        return stirrup_size, max(s_hinge_actual, 50.0), max(s_span_actual, 50.0), Ve / 1000, Al_req, Tn_provided, notes
-
-def get_best_commercial_length(required_length_m, db_mm):
-    commercial_lengths, splice_len_m = [6.0, 7.5, 9.0, 10.5, 12.0], (40 * db_mm) / 1000.0
-    for stock in commercial_lengths:
-        if required_length_m <= stock: return f"1 x {stock}m", stock, 0
-    effective_stock_len = 12.0 - splice_len_m
-    num_bars = math.ceil(required_length_m / effective_stock_len)
-    return f"{num_bars} x 12.0m", num_bars * 12.0, num_bars - 1
 
 def calculate_qto(geom, res_left, res_mid, res_right):
     L_m, w_m, h_m = geom.length / 1000.0, geom.width / 1000.0, geom.height / 1000.0
-    vol_concrete, area_formwork = w_m * h_m * L_m, (w_m + 2 * h_m) * L_m
+    vol_concrete = w_m * h_m * L_m
+    area_formwork = (w_m + 2 * h_m + 0.1) * L_m
+
     rebar_rows, total_kg = [], 0.0
 
     def get_db(bars_list):
         if not bars_list: return 0.0
         val = bars_list[0] if isinstance(bars_list, list) else bars_list
         if "-leg" in val: val = val.split(" ")[1]
-        try: return float(val.replace('D', ''))
-        except: return 16.0
+        try:
+            return float(val.replace('D', ''))
+        except:
+            return 16.0
+
+    # Optimal 1D Bin Packing for Standard Rebar Lengths
+    def get_best_commercial_order(req_len, qty, db_mm):
+        stocks = [6.0, 7.5, 9.0, 10.5, 12.0]
+        splice_m = 40 * db_mm / 1000.0
+
+        if req_len > 12.0:
+            eff_12 = 12.0 - splice_m
+            num_12 = int(req_len // eff_12)
+            rem = req_len - num_12 * eff_12
+            if rem > 0: rem += splice_m
+
+            best_waste, best_S, best_count = float('inf'), 12.0, 0
+            if rem > 0:
+                for S in stocks:
+                    if S >= rem:
+                        pieces_per_S = int(S // rem)
+                        if pieces_per_S > 0:
+                            count = math.ceil(qty / pieces_per_S)
+                            waste = count * S - (qty * rem)
+                            if waste < best_waste:
+                                best_waste, best_S, best_count = waste, S, count
+
+            total_12m = num_12 * qty
+            order_parts = []
+            if total_12m > 0: order_parts.append(f"{total_12m} x 12.0m")
+            if rem > 0 and best_count > 0: order_parts.append(f"{best_count} x {best_S}m")
+
+            return " + ".join(order_parts), (total_12m * 12.0 + (best_count * best_S if rem > 0 else 0))
+        else:
+            best_waste, best_S, best_count = float('inf'), 12.0, 0
+            for S in stocks:
+                if S >= req_len:
+                    pieces_per_S = int(S // req_len)
+                    if pieces_per_S > 0:
+                        count = math.ceil(qty / pieces_per_S)
+                        waste = count * S - (qty * req_len)
+                        if waste < best_waste:
+                            best_waste, best_S, best_count = waste, S, count
+            return f"{best_count} x {best_S}m", best_count * best_S
 
     def add_rebar(name, bars_list, theoretical_length_m, has_hooks=False):
         nonlocal total_kg
@@ -151,31 +157,63 @@ def calculate_qto(geom, res_left, res_mid, res_right):
         if db == 0: return
         num_bars = len(bars_list)
         req_len_per_bar = theoretical_length_m + (2 * ((12 * db + 100) / 1000.0 if has_hooks else 0.0))
-        stock_text, total_ordered_m_per_bar, _ = get_best_commercial_length(req_len_per_bar, db)
-        weight_kg = (total_ordered_m_per_bar * num_bars) * ((db**2) / 162.0)
+        stock_text, total_ordered_m = get_best_commercial_order(req_len_per_bar, num_bars, db)
+        weight_kg = total_ordered_m * ((db ** 2) / 162.0)
         total_kg += weight_kg
-        rebar_rows.append(air.Tr(air.Td(air.Strong(name)), air.Td(f"D{int(db)}"), air.Td(str(num_bars)), air.Td(f"{req_len_per_bar:.2f}m"), air.Td(air.Span(stock_text, style="color: #db2777; font-weight: 600;")), air.Td(f"{weight_kg:.1f} kg")))
+        rebar_rows.append(air.Tr(air.Td(air.Strong(name)), air.Td(f"D{int(db)}"), air.Td(str(num_bars)),
+                                 air.Td(f"{req_len_per_bar:.2f}m"),
+                                 air.Td(air.Span(stock_text, style="color: #db2777; font-weight: 600;")),
+                                 air.Td(f"{weight_kg:.1f} kg")))
 
-    add_rebar("Bottom Continuous", res_mid.reinforcement.main_bars, L_m, has_hooks=True)
-    add_rebar("Top Support (Left)", res_left.reinforcement.main_bars, L_m / 3, has_hooks=True)
-    add_rebar("Top Support (Right)", res_right.reinforcement.main_bars, L_m / 3, has_hooks=True)
-    add_rebar("Top Hanger (Midspan)", res_mid.reinforcement.compression_bars, L_m / 3, has_hooks=False)
+    # Extract detailed layers based on unified geometry
+    n_top_cont = len(res_mid.reinforcement.top_bars)
+    top_cont_bars = res_mid.reinforcement.top_bars
+    top_add_left_bars = res_left.reinforcement.top_bars[n_top_cont:] if len(
+        res_left.reinforcement.top_bars) > n_top_cont else []
+    top_add_right_bars = res_right.reinforcement.top_bars[n_top_cont:] if len(
+        res_right.reinforcement.top_bars) > n_top_cont else []
+
+    n_bot_cont = min(len(res_left.reinforcement.bottom_bars), len(res_right.reinforcement.bottom_bars))
+    if n_bot_cont == 0: n_bot_cont = len(res_mid.reinforcement.bottom_bars)
+    bot_cont_bars = res_mid.reinforcement.bottom_bars[:n_bot_cont]
+    bot_add_mid_bars = res_mid.reinforcement.bottom_bars[n_bot_cont:] if len(
+        res_mid.reinforcement.bottom_bars) > n_bot_cont else []
+
+    # Inject detailed bar logic per requested behavior
+    add_rebar("Top Continuous", top_cont_bars, L_m, has_hooks=True)
+    if top_add_left_bars: add_rebar("Top Additional (Left)", top_add_left_bars, 0.30 * L_m, has_hooks=True)
+    if top_add_right_bars: add_rebar("Top Additional (Right)", top_add_right_bars, 0.30 * L_m, has_hooks=True)
+
+    add_rebar("Bottom Continuous", bot_cont_bars, L_m, has_hooks=True)
+    if bot_add_mid_bars: add_rebar("Bottom Additional (Midspan)", bot_add_mid_bars, (2.0 / 3.0) * L_m, has_hooks=False)
+
+    add_rebar("Web bars", res_mid.reinforcement.side_bars, L_m, has_hooks=False)
 
     L_hl, s_hl = res_left.reinforcement.hinge_length, max(res_left.reinforcement.stirrup_spacing_hinge, 50) / 1000.0
     L_hr, s_hr = res_right.reinforcement.hinge_length, max(res_right.reinforcement.stirrup_spacing_hinge, 50) / 1000.0
-    L_mid, s_m = max(0, L_m - (L_hl/1000.0) - (L_hr/1000.0)), max(res_mid.reinforcement.stirrup_spacing, 50) / 1000.0
-    total_stirrups = int((L_hl/1000.0) / s_hl) + int((L_hr/1000.0) / s_hr) + int(L_mid / s_m)
+    L_mid, s_m = max(0, L_m - (L_hl / 1000.0) - (L_hr / 1000.0)), max(res_mid.reinforcement.stirrup_spacing,
+                                                                      50) / 1000.0
+    total_stirrups = int((L_hl / 1000.0) / s_hl) + int((L_hr / 1000.0) / s_hr) + int(L_mid / s_m)
 
     if total_stirrups > 0:
         db_s = get_db(res_mid.reinforcement.stirrups)
         legs = int(res_mid.reinforcement.stirrups.split('-')[0]) if "-leg" in res_mid.reinforcement.stirrups else 2
         c_m = geom.cover / 1000.0
-        stirrup_len_m = (2*(w_m - 2*c_m) + 2*(h_m - 2*c_m) + (24 * db_s / 1000.0)) + ((legs - 2) * (h_m - 2*c_m + (12 * db_s / 1000.0)))
-        weight_kg = (total_stirrups * stirrup_len_m) * ((db_s**2) / 162.0)
+
+        outer_hoop_len = 2 * (w_m - 2 * c_m) + 2 * (h_m - 2 * c_m) + 24 * db_s / 1000.0
+        cross_ties_len = max(0, legs - 2) * (h_m - 2 * c_m + 24 * db_s / 1000.0)
+        stirrup_len_m = outer_hoop_len + cross_ties_len
+
+        total_stirrup_length_m = total_stirrups * stirrup_len_m
+        num_12m_bars = math.ceil(total_stirrup_length_m / 12.0)
+        weight_kg = num_12m_bars * 12.0 * ((db_s ** 2) / 162.0)
         total_kg += weight_kg
-        rebar_rows.append(air.Tr(air.Td(air.Strong(f"Stirrups ({legs}-leg)")), air.Td(f"D{int(db_s)}"), air.Td(str(total_stirrups)), air.Td(f"{stirrup_len_m:.2f}m"), air.Td(f"Cut from 12m"), air.Td(f"{weight_kg:.1f} kg")))
+        rebar_rows.append(
+            air.Tr(air.Td(air.Strong(f"Stirrups ({legs}-leg)")), air.Td(f"D{int(db_s)}"), air.Td(str(total_stirrups)),
+                   air.Td(f"{stirrup_len_m:.2f}m"), air.Td(f"{num_12m_bars} x 12.0m"), air.Td(f"{weight_kg:.1f} kg")))
 
     return vol_concrete, area_formwork, total_kg, rebar_rows
+
 
 # ----------------------------------------------------------------------
 # 3. VISUALIZATION COMPONENTS
@@ -183,136 +221,201 @@ def calculate_qto(geom, res_left, res_mid, res_right):
 def generate_beam_elevation_css(length, height, res_left, res_mid, res_right):
     vis_height = max(100, min(240, 1000 * (height / length)))
     stirrup_elements = []
-    s_hinge_left, hinge_len_left = max(res_left.reinforcement.stirrup_spacing_hinge, 50), res_left.reinforcement.hinge_length
+    s_hinge_left, hinge_len_left = max(res_left.reinforcement.stirrup_spacing_hinge,
+                                       50), res_left.reinforcement.hinge_length
     s_mid = max(res_mid.reinforcement.stirrup_spacing, 50)
-    s_hinge_right, hinge_len_right = max(res_right.reinforcement.stirrup_spacing_hinge, 50), res_right.reinforcement.hinge_length
+    s_hinge_right, hinge_len_right = max(res_right.reinforcement.stirrup_spacing_hinge,
+                                         50), res_right.reinforcement.hinge_length
 
     x, loop_guard = 50.0, 0
     while x < length - 50.0 and loop_guard < 400:
         loop_guard += 1
-        if x <= hinge_len_left: s, color, z_index = s_hinge_left, "#db2777", 2
-        elif x >= length - hinge_len_right: s, color, z_index = s_hinge_right, "#db2777", 2
-        else: s, color, z_index = s_mid, "#9ca3af", 1
-        stirrup_elements.append(air.Div(style=f"position: absolute; left: {(x / length) * 100}%; top: 10%; bottom: 10%; width: 2px; background: {color}; z-index: {z_index};"))
+        if x <= hinge_len_left:
+            s, color, z_index = s_hinge_left, "#db2777", 2
+        elif x >= length - hinge_len_right:
+            s, color, z_index = s_hinge_right, "#db2777", 2
+        else:
+            s, color, z_index = s_mid, "#9ca3af", 1
+        stirrup_elements.append(air.Div(
+            style=f"position: absolute; left: {(x / length) * 100}%; top: 10%; bottom: 10%; width: 2px; background: {color}; z-index: {z_index};"))
         x += s
 
     beam_body = air.Div(
         air.Div(style="position: absolute; top: 12%; left: 0; right: 0; height: 4px; background: #2563eb; z-index: 3;"),
-        air.Div(style="position: absolute; bottom: 12%; left: 0; right: 0; height: 4px; background: #2563eb; z-index: 3;"),
-        *stirrup_elements, style=f"position: relative; width: 100%; height: {vis_height}px; background: #f3f4f6; border: 3px solid #111827; border-radius: 4px; overflow: hidden; box-sizing: border-box;"
+        air.Div(
+            style="position: absolute; bottom: 12%; left: 0; right: 0; height: 4px; background: #2563eb; z-index: 3;"),
+        *stirrup_elements,
+        style=f"position: relative; width: 100%; height: {vis_height}px; background: #f3f4f6; border: 3px solid #111827; border-radius: 4px; overflow: hidden; box-sizing: border-box;"
     )
     labels = air.Div(
-        air.Div(f"Hinge ({hinge_len_left:.0f}mm)", style=f"position: absolute; left: 0; top: 100%; font-size: 12px; color: #db2777; font-weight: bold; width: {(hinge_len_left/length)*100}%; border-top: 2px solid #db2777; padding-top: 4px;"),
-        air.Div(f"Midspan", style="position: absolute; left: 50%; top: 100%; font-size: 12px; color: #6b7280; transform: translateX(-50%); padding-top: 4px;"),
-        air.Div(f"Hinge ({hinge_len_right:.0f}mm)", style=f"position: absolute; right: 0; top: 100%; font-size: 12px; color: #db2777; font-weight: bold; width: {(hinge_len_right/length)*100}%; border-top: 2px solid #db2777; padding-top: 4px; text-align: right;"),
+        air.Div(f"Hinge ({hinge_len_left:.0f}mm)",
+                style=f"position: absolute; left: 0; top: 100%; font-size: 12px; color: #db2777; font-weight: bold; width: {(hinge_len_left / length) * 100}%; border-top: 2px solid #db2777; padding-top: 4px;"),
+        air.Div(f"Midspan",
+                style="position: absolute; left: 50%; top: 100%; font-size: 12px; color: #6b7280; transform: translateX(-50%); padding-top: 4px;"),
+        air.Div(f"Hinge ({hinge_len_right:.0f}mm)",
+                style=f"position: absolute; right: 0; top: 100%; font-size: 12px; color: #db2777; font-weight: bold; width: {(hinge_len_right / length) * 100}%; border-top: 2px solid #db2777; padding-top: 4px; text-align: right;"),
         style="position: relative; width: 100%; height: 30px; margin-top: 4px;"
     )
-    return air.Div(beam_body, labels, style="padding: 24px; background: #ffffff; border-radius: 8px; border: 2px dashed #e5e7eb; margin-bottom: 32px;")
+    return air.Div(beam_body, labels,
+                   style="padding: 24px; background: #ffffff; border-radius: 8px; border: 2px dashed #e5e7eb; margin-bottom: 32px;")
 
-def generate_beam_section_css(width, height, cover, stirrup_str, main_bars_list, comp_bars_list, is_support, torsion_req):
-    top_bars, bottom_bars = (main_bars_list, comp_bars_list) if is_support else (comp_bars_list, main_bars_list)
+
+def generate_beam_section_css(width, height, cover, stirrup_str, top_bars_list, bot_bars_list, side_bars_list):
     scale = min(200 / max(width, 1), 240 / max(height, 1))
     draw_w, draw_h, c_s = width * scale, height * scale, cover * scale
 
     children = []
     stirrup_w, stirrup_h = draw_w - 2 * c_s, draw_h - 2 * c_s
     legs = int(stirrup_str.split("-")[0]) if "-leg" in stirrup_str else 2
-    
+
     if stirrup_w > 0 and stirrup_h > 0:
-        children.append(air.Div(style=f"position: absolute; left: {c_s}px; top: {c_s}px; width: {stirrup_w}px; height: {stirrup_h}px; border: 2px dashed #db2777; border-radius: 6px; box-sizing: border-box;"))
+        children.append(air.Div(
+            style=f"position: absolute; left: {c_s}px; top: {c_s}px; width: {stirrup_w}px; height: {stirrup_h}px; border: 2px dashed #db2777; border-radius: 6px; box-sizing: border-box;"))
         if legs > 2:
             inner_spacing = stirrup_w / (legs - 1)
             for i in range(1, legs - 1):
-                children.append(air.Div(style=f"position: absolute; left: {c_s + i * inner_spacing}px; top: {c_s}px; width: 0px; height: {stirrup_h}px; border-left: 2px dashed #db2777; box-sizing: border-box;"))
+                children.append(air.Div(
+                    style=f"position: absolute; left: {c_s + i * inner_spacing}px; top: {c_s}px; width: 0px; height: {stirrup_h}px; border-left: 2px dashed #db2777; box-sizing: border-box;"))
 
     def create_css_bars(bars_list, is_top):
         bars = []
         if not bars_list: return bars
         db = float(bars_list[0].replace('D', '')) if 'D' in bars_list[0] else 20.0
-        avail_w, min_s = width - 2*cover - 2*10, max(25.0, db)
+        avail_w, min_s = width - 2 * cover - 2 * 10, max(25.0, db)
         max_bars = max(2, int((avail_w + min_s) / (db + min_s)))
         layers, rem = [], len(bars_list)
         while rem > 0:
             take = min(rem, max_bars)
             layers.append(take)
             rem -= take
-            
+
         for layer_idx, num_bars in enumerate(layers):
-            y_pos = c_s + 4 + layer_idx * (12 + 25.0 * scale) if is_top else draw_h - c_s - 12 - 4 - layer_idx * (12 + 25.0 * scale)
+            y_pos = c_s + 4 + layer_idx * (12 + 25.0 * scale) if is_top else draw_h - c_s - 12 - 4 - layer_idx * (
+                        12 + 25.0 * scale)
             start_x, spacing = c_s + 4, (stirrup_w - 12 - 8) / (num_bars - 1) if num_bars > 1 else 0
             for i in range(num_bars):
-                cx = start_x + (stirrup_w - 12 - 8)/2 if num_bars == 1 else start_x + i * spacing
-                bars.append(air.Div(style=f"position: absolute; left: {cx}px; top: {y_pos}px; width: 12px; height: 12px; background: #2563eb; border: 2px solid #111827; border-radius: 50%; box-sizing: border-box;"))
+                cx = start_x + (stirrup_w - 12 - 8) / 2 if num_bars == 1 else start_x + i * spacing
+                bars.append(air.Div(
+                    style=f"position: absolute; left: {cx}px; top: {y_pos}px; width: 12px; height: 12px; background: #2563eb; border: 2px solid #111827; border-radius: 50%; box-sizing: border-box;"))
         return bars
 
-    children.extend(create_css_bars(top_bars, True))
-    children.extend(create_css_bars(bottom_bars, False))
-    
-    if torsion_req:
-        y_pos = (draw_h / 2) - 6
-        children.append(air.Div(style=f"position: absolute; left: {c_s + 4}px; top: {y_pos}px; width: 12px; height: 12px; background: #D97706; border: 2px solid #111827; border-radius: 50%; box-sizing: border-box;"))
-        children.append(air.Div(style=f"position: absolute; left: {draw_w - c_s - 16}px; top: {y_pos}px; width: 12px; height: 12px; background: #D97706; border: 2px solid #111827; border-radius: 50%; box-sizing: border-box;"))
+    children.extend(create_css_bars(top_bars_list, True))
+    children.extend(create_css_bars(bot_bars_list, False))
 
-    concrete_block = air.Div(*children, style=f"position: relative; width: {draw_w}px; height: {draw_h}px; background: #f3f4f6; border: 3px solid #111827; border-radius: 4px; box-sizing: border-box;")
+    if side_bars_list:
+        layers = len(side_bars_list) // 2
+        y_inner_space = stirrup_h - 24
+        spacing_y = y_inner_space / (layers + 1)
+        for i in range(layers):
+            y_pos = c_s + 12 + (i + 1) * spacing_y - 6
+            children.append(air.Div(
+                style=f"position: absolute; left: {c_s + 4}px; top: {y_pos}px; width: 12px; height: 12px; background: #D97706; border: 2px solid #111827; border-radius: 50%; box-sizing: border-box;"))
+            children.append(air.Div(
+                style=f"position: absolute; left: {draw_w - c_s - 16}px; top: {y_pos}px; width: 12px; height: 12px; background: #D97706; border: 2px solid #111827; border-radius: 50%; box-sizing: border-box;"))
+
+    concrete_block = air.Div(*children,
+                             style=f"position: relative; width: {draw_w}px; height: {draw_h}px; background: #f3f4f6; border: 3px solid #111827; border-radius: 4px; box-sizing: border-box;")
     return air.Div(
-        air.Div(f"{width} mm", style="text-align: center; font-family: monospace; font-weight: 700; color: #6b7280; margin-bottom: 8px;"),
-        air.Div(air.Div(f"{height} mm", style="position: absolute; left: -65px; top: 50%; transform: translateY(-50%); font-family: monospace; font-weight: 700; color: #6b7280;"), concrete_block, style="position: relative; display: inline-block; margin-left: 40px;"),
+        air.Div(f"{width} mm",
+                style="text-align: center; font-family: monospace; font-weight: 700; color: #6b7280; margin-bottom: 8px;"),
+        air.Div(air.Div(f"{height} mm",
+                        style="position: absolute; left: -65px; top: 50%; transform: translateY(-50%); font-family: monospace; font-weight: 700; color: #6b7280;"),
+                concrete_block, style="position: relative; display: inline-block; margin-left: 40px;"),
         style="display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 32px 0; margin-bottom: 24px; background: #ffffff; border-radius: 8px; border: 2px dashed #e5e7eb;"
     )
 
+
 def render_force_inputs(title, prefix, data, show_gravity=False, show_deflection=False):
     fields = [
-        air.Div(air.Label("Factored load moment Mu (kN·m)"), air.Input(type="number", name=f"{prefix}_mu", value=str(getattr(data, f"{prefix}_mu")), step="any", required=True), class_="form-group"),
-        air.Div(air.Label("Factored load shear Vu (kN)"), air.Input(type="number", name=f"{prefix}_vu", value=str(getattr(data, f"{prefix}_vu")), step="any", required=True), class_="form-group"),
-        air.Div(air.Label("Factored load torsion Tu (kN·m)"), air.Input(type="number", name=f"{prefix}_tu", value=str(getattr(data, f"{prefix}_tu")), step="any", required=True), class_="form-group")
+        air.Div(air.Label("Factored -Mu [Top] (kN·m)"),
+                air.Input(type="number", name=f"{prefix}_mu_neg", value=str(getattr(data, f"{prefix}_mu_neg")),
+                          step="any", required=True), class_="form-group"),
+        air.Div(air.Label("Factored +Mu [Bottom] (kN·m)"),
+                air.Input(type="number", name=f"{prefix}_mu_pos", value=str(getattr(data, f"{prefix}_mu_pos")),
+                          step="any", required=True), class_="form-group"),
+        air.Div(air.Label("Factored shear Vu (kN)"),
+                air.Input(type="number", name=f"{prefix}_vu", value=str(getattr(data, f"{prefix}_vu")), step="any",
+                          required=True), class_="form-group"),
+        air.Div(air.Label("Factored torsion Tu (kN·m)"),
+                air.Input(type="number", name=f"{prefix}_tu", value=str(getattr(data, f"{prefix}_tu")), step="any",
+                          required=True), class_="form-group")
     ]
-    if show_gravity: fields.append(air.Div(air.Label("Gravity load shear Vg (kN)"), air.Input(type="number", name=f"{prefix}_vg", value=str(getattr(data, f"{prefix}_vg")), step="any", required=True), class_="form-group"))
-    else: fields.append(air.Input(type="hidden", name=f"{prefix}_vg", value="0"))
-    if show_deflection:
-        fields.append(air.Div(air.Label("Service live load moment (kN·m)"), air.Input(type="number", name=f"{prefix}_mlive", value=str(getattr(data, f"{prefix}_mlive")), step="any", required=True), class_="form-group"))
-        fields.append(air.Div(air.Label("Sustained load moment (kN·m)"), air.Input(type="number", name=f"{prefix}_msus", value=str(getattr(data, f"{prefix}_msus")), step="any", required=True), class_="form-group"))
+    if show_gravity:
+        fields.append(air.Div(air.Label("Gravity shear Vg (kN)"),
+                              air.Input(type="number", name=f"{prefix}_vg", value=str(getattr(data, f"{prefix}_vg")),
+                                        step="any", required=True), class_="form-group"))
     else:
+        fields.append(air.Input(type="hidden", name=f"{prefix}_vg", value="0"))
+    if show_deflection:
+        fields.append(air.Div(air.Label("Service dead moment (kN·m)"), air.Input(type="number", name=f"{prefix}_mdead",
+                                                                                 value=str(
+                                                                                     getattr(data, f"{prefix}_mdead")),
+                                                                                 step="any", required=True),
+                              class_="form-group"))
+        fields.append(air.Div(air.Label("Service live moment (kN·m)"), air.Input(type="number", name=f"{prefix}_mlive",
+                                                                                 value=str(
+                                                                                     getattr(data, f"{prefix}_mlive")),
+                                                                                 step="any", required=True),
+                              class_="form-group"))
+    else:
+        fields.append(air.Input(type="hidden", name=f"{prefix}_mdead", value="0"))
         fields.append(air.Input(type="hidden", name=f"{prefix}_mlive", value="0"))
-        fields.append(air.Input(type="hidden", name=f"{prefix}_msus", value="0"))
     return air.Div(air.H3(title), *fields, class_="section-box")
 
-def render_section_results(title, result, width, height, cover, is_support=False):
-    main_bars = f"{len(result.reinforcement.main_bars)}x{result.reinforcement.main_bars[0]}" if result.reinforcement.main_bars else "None"
-    comp_bars = f"{len(result.reinforcement.compression_bars)}x{result.reinforcement.compression_bars[0]}" if result.reinforcement.compression_bars else "None"
+
+def render_section_results(title, result, width, height, cover):
+    top_bars = f"{len(result.reinforcement.top_bars)}x{result.reinforcement.top_bars[0]}" if result.reinforcement.top_bars else "None"
+    bot_bars = f"{len(result.reinforcement.bottom_bars)}x{result.reinforcement.bottom_bars[0]}" if result.reinforcement.bottom_bars else "None"
+    side_bars = f"{len(result.reinforcement.side_bars)}x{result.reinforcement.side_bars[0]}" if result.reinforcement.side_bars else "None"
+
     transverse_str = f"{result.reinforcement.stirrups} @ {result.reinforcement.stirrup_spacing:.0f} mm"
-    if is_support and result.reinforcement.stirrup_spacing_hinge > 0: transverse_str = f"{result.reinforcement.stirrups} @ {result.reinforcement.stirrup_spacing_hinge:.0f} mm (Hinge)"
-        
-    torsion_req = result.reinforcement.torsion_required
-    torsion_str = f"Al = {result.reinforcement.torsion_longitudinal_area:.0f} mm²" if torsion_req else "Not Required"
+    if result.reinforcement.stirrup_spacing_hinge > 0: transverse_str = f"{result.reinforcement.stirrups} @ {result.reinforcement.stirrup_spacing_hinge:.0f} mm (Hinge)"
+
     status_color = "#16A34A" if result.utilization_ratio <= 1.0 else "#DC2626"
-    
-    css_diagram = generate_beam_section_css(width, height, cover, result.reinforcement.stirrups, result.reinforcement.main_bars, result.reinforcement.compression_bars, is_support, torsion_req)
+
+    css_diagram = generate_beam_section_css(width, height, cover, result.reinforcement.stirrups,
+                                            result.reinforcement.top_bars, result.reinforcement.bottom_bars,
+                                            result.reinforcement.side_bars)
+
+    notes_elements = []
+    if result.design_notes:
+        notes_elements.append(air.H4("Notes", style="margin-top: 20px; color: #92400e;"))
+        list_items = []
+        for note in list(dict.fromkeys(result.design_notes)):
+            icon = "⚠️ " if any(x in note for x in ["Violation", "CRITICAL", "inadequate", "exceeded"]) else "ℹ️ "
+            list_items.append(air.Li(f"{icon} {note}"))
+        notes_elements.append(air.Ul(*list_items, class_="notes-list"))
 
     return air.Div(
         air.H3(title), css_diagram,
         air.H4("Capacities"),
         air.Ul(
-            air.Li(air.Strong("Flexure (φMn)"), air.Span(f"{result.moment_capacity:.1f} kN·m", class_="data-value")),
-            air.Li(air.Strong("Shear (φVn / Ve)"), air.Span(f"{result.shear_capacity:.1f} / {result.capacity_shear_ve:.1f} kN", class_="data-value")),
+            air.Li(air.Strong("Flexure (φMn) Top/Bot"),
+                   air.Span(f"{result.moment_capacity_top:.1f} / {result.moment_capacity_bot:.1f} kN·m",
+                            class_="data-value")),
+            air.Li(air.Strong("Shear (φVn / Ve)"),
+                   air.Span(f"{result.shear_capacity:.1f} / {result.capacity_shear_ve:.1f} kN", class_="data-value")),
             air.Li(air.Strong("Torsion (φTn)"), air.Span(f"{result.torsion_capacity:.1f} kN·m", class_="data-value")),
-            air.Li(air.Strong("DCR"), air.Span(f"{result.utilization_ratio:.2f}", class_="data-value", style=f"color: {status_color};"))
+            air.Li(air.Strong("DCR"),
+                   air.Span(f"{result.utilization_ratio:.2f}", class_="data-value", style=f"color: {status_color};"))
         ),
         air.H4("Reinforcements"),
         air.Ul(
-            air.Li(air.Strong("Tension bars"), air.Span(main_bars, class_="data-value", style="color: #2563eb;")),
-            air.Li(air.Strong("Compression bars"), air.Span(comp_bars, class_="data-value")),
-            air.Li(air.Strong("Stirrups"), air.Span(transverse_str, class_="data-value", style="color: #db2777;")),
-            air.Li(air.Strong("Longitudinal torsion area"), air.Span(torsion_str, class_="data-value", style="color: #D97706;"))
+            air.Li(air.Strong("Top bars"), air.Span(top_bars, class_="data-value", style="color: #2563eb;")),
+            air.Li(air.Strong("Bottom bars"), air.Span(bot_bars, class_="data-value", style="color: #2563eb;")),
+            air.Li(air.Strong("Web bars"),
+                   air.Span(side_bars, class_="data-value", style="color: #D97706;")),
+            air.Li(air.Strong("Stirrups"), air.Span(transverse_str, class_="data-value", style="color: #db2777;"))
         ),
+        *notes_elements,
         class_="section-box"
     )
+
 
 # ----------------------------------------------------------------------
 # 4. MODULE ROUTES
 # ----------------------------------------------------------------------
 def setup_beam_routes(app):
-    """Registers the Beam Designer routes to the main application."""
-    
     @app.get("/beam")
     def beam_index(request: air.Request):
         data = BeamDesignModel()
@@ -321,12 +424,14 @@ def setup_beam_routes(app):
             try:
                 parsed = json.loads(saved_inputs)
                 data = BeamDesignModel(**parsed)
-            except Exception: pass
-                
+            except Exception:
+                pass
+
         if not data.proj_date: data.proj_date = date.today().strftime("%Y-%m-%d")
-            
+
         csrf_token = ""
-        if hasattr(request, "state") and hasattr(request.state, "csrf_token"): csrf_token = request.state.csrf_token
+        if hasattr(request, "state") and hasattr(request.state, "csrf_token"):
+            csrf_token = request.state.csrf_token
         elif "csrftoken" in request.scope:
             token = request.scope["csrftoken"]
             csrf_token = token() if callable(token) else token
@@ -334,7 +439,9 @@ def setup_beam_routes(app):
             token = request.scope["csrf_token"]
             csrf_token = token() if callable(token) else token
         if not csrf_token: csrf_token = request.cookies.get("csrftoken", "dev_fallback_token")
-        
+
+        bar_opts = ["D10", "D12", "D16", "D20", "D25", "D28", "D32", "D36"]
+
         return expressive_layout(
             air.Header(
                 air.A("← Dashboard", href="/", class_="back-link no-print"),
@@ -348,28 +455,81 @@ def setup_beam_routes(app):
                     air.Div(
                         air.H2("Project Information"),
                         air.Div(
-                            air.Div(air.Label("Project Name"), air.Input(type="text", name="proj_name", value=data.proj_name, required=True), class_="form-group"),
-                            air.Div(air.Label("Location"), air.Input(type="text", name="proj_loc", value=data.proj_loc, required=True), class_="form-group"),
-                            air.Div(air.Label("Structural Engineer"), air.Input(type="text", name="proj_eng", value=data.proj_eng, required=True), class_="form-group"),
-                            air.Div(air.Label("Date"), air.Input(type="date", name="proj_date", value=data.proj_date, required=True), class_="form-group"),
+                            air.Div(air.Label("Project Name"),
+                                    air.Input(type="text", name="proj_name", value=data.proj_name, required=True),
+                                    class_="form-group"),
+                            air.Div(air.Label("Location"),
+                                    air.Input(type="text", name="proj_loc", value=data.proj_loc, required=True),
+                                    class_="form-group"),
+                            air.Div(air.Label("Structural Engineer"),
+                                    air.Input(type="text", name="proj_eng", value=data.proj_eng, required=True),
+                                    class_="form-group"),
+                            air.Div(air.Label("Date"),
+                                    air.Input(type="date", name="proj_date", value=data.proj_date, required=True),
+                                    class_="form-group"),
                             class_="grid-2"
                         ), class_="card"
                     ),
                     air.Div(
                         air.H2("Geometry and Materials"),
                         air.Div(
-                            air.Div(air.Label("Beam width (mm)"), air.Input(type="number", name="width", value=str(data.width), required=True), class_="form-group"),
-                            air.Div(air.Label("Beam depth (mm)"), air.Input(type="number", name="height", value=str(data.height), required=True), class_="form-group"),
-                            air.Div(air.Label("Effective depth (mm)"), air.Input(type="number", name="effective_depth", value=str(data.effective_depth), required=True), class_="form-group"),
-                            air.Div(air.Label("Center-to-center span (mm)"), air.Input(type="number", name="length", value=str(data.length), required=True), class_="form-group"),
-                            air.Div(air.Label("Clear span (mm)"), air.Input(type="number", name="clear_span", value=str(data.clear_span), required=True), class_="form-group"),
-                            air.Div(air.Label("Seismic Design Category"), air.Select(air.Option("A", value="A", selected=(data.sdc == "A")), air.Option("B", value="B", selected=(data.sdc == "B")), air.Option("C", value="C", selected=(data.sdc == "C")), air.Option("D", value="D", selected=(data.sdc == "D")), air.Option("E", value="E", selected=(data.sdc == "E")), air.Option("F", value="F", selected=(data.sdc == "F")), name="sdc"), class_="form-group"),
-                            air.Div(air.Label("Concrete strength (MPa)"), air.Input(type="number", name="fc_prime", value=str(data.fc_prime), step="any", required=True), class_="form-group"),
-                            air.Div(air.Label("Main bar yield strength (MPa)"), air.Input(type="number", name="fy", value=str(data.fy), step="any", required=True), class_="form-group"),
-                            air.Div(air.Label("Stirrup yield strength (MPa)"), air.Input(type="number", name="fyt", value=str(data.fyt), step="any", required=True), class_="form-group"),
-                            air.Div(air.Label("Moment frame system"), air.Select(air.Option("Ordinary", value="ordinary", selected=(data.frame_system == "ordinary")), air.Option("Intermediate", value="intermediate", selected=(data.frame_system == "intermediate")), air.Option("Special (SMF)", value="special", selected=(data.frame_system == "special")), name="frame_system"), class_="form-group"),
-                            air.Div(air.Label("Main bar diameter"), air.Select(*[air.Option(opt, selected=(data.pref_main == opt)) for opt in ["D10", "D12", "D16", "D20", "D25", "D28", "D32", "D36"]], name="pref_main"), class_="form-group"),
-                            air.Div(air.Label("Stirrup diameter"), air.Select(*[air.Option(opt, selected=(data.pref_stirrup == opt)) for opt in ["D10", "D12", "D16", "D20"]], name="pref_stirrup"), class_="form-group"),
+                            air.Div(air.Label("Beam width (mm)"),
+                                    air.Input(type="number", name="width", value=str(data.width), required=True),
+                                    class_="form-group"),
+                            air.Div(air.Label("Beam depth (mm)"),
+                                    air.Input(type="number", name="height", value=str(data.height), required=True),
+                                    class_="form-group"),
+                            air.Div(air.Label("Effective depth (mm)"),
+                                    air.Input(type="number", name="effective_depth", value=str(data.effective_depth),
+                                              required=True), class_="form-group"),
+                            air.Div(air.Label("Center-to-center span (mm)"),
+                                    air.Input(type="number", name="length", value=str(data.length), required=True),
+                                    class_="form-group"),
+                            air.Div(air.Label("Clear span (mm)"),
+                                    air.Input(type="number", name="clear_span", value=str(data.clear_span),
+                                              required=True), class_="form-group"),
+                            air.Div(air.Label("Seismic Design Category"),
+                                    air.Select(air.Option("A", value="A", selected=(data.sdc == "A")),
+                                               air.Option("B", value="B", selected=(data.sdc == "B")),
+                                               air.Option("C", value="C", selected=(data.sdc == "C")),
+                                               air.Option("D", value="D", selected=(data.sdc == "D")),
+                                               air.Option("E", value="E", selected=(data.sdc == "E")),
+                                               air.Option("F", value="F", selected=(data.sdc == "F")), name="sdc"),
+                                    class_="form-group"),
+                            air.Div(air.Label("Concrete strength (MPa)"),
+                                    air.Input(type="number", name="fc_prime", value=str(data.fc_prime), step="any",
+                                              required=True), class_="form-group"),
+                            air.Div(air.Label("Main bar yield strength (MPa)"),
+                                    air.Input(type="number", name="fy", value=str(data.fy), step="any", required=True),
+                                    class_="form-group"),
+                            air.Div(air.Label("Stirrup yield strength (MPa)"),
+                                    air.Input(type="number", name="fyt", value=str(data.fyt), step="any",
+                                              required=True), class_="form-group"),
+                            air.Div(air.Label("Moment frame system"), air.Select(
+                                air.Option("Ordinary (OMF)", value="ordinary",
+                                           selected=(data.frame_system == "ordinary")),
+                                air.Option("Intermediate (IMF)", value="intermediate",
+                                           selected=(data.frame_system == "intermediate")),
+                                air.Option("Special (SMF)", value="special", selected=(data.frame_system == "special")),
+                                name="frame_system"), class_="form-group"),
+
+                            air.Div(air.Label("Main bar diameter"),
+                                    air.Select(*[air.Option(opt, selected=(data.pref_main == opt)) for opt in bar_opts],
+                                               name="pref_main"), class_="form-group"),
+                            air.Div(air.Label("Stirrup diameter"), air.Select(
+                                *[air.Option(opt, selected=(data.pref_stirrup == opt)) for opt in bar_opts],
+                                name="pref_stirrup"), class_="form-group"),
+                            air.Div(air.Label("Side bar diameter"), air.Select(
+                                *[air.Option(opt, selected=(data.pref_torsion == opt)) for opt in bar_opts],
+                                name="pref_torsion"), class_="form-group"),
+
+                            air.Div(air.Label("Long term deflection limit"), air.Select(
+                                air.Option("L/240 (non-sensitive finishes)", value="240",
+                                           selected=(str(data.deflection_limit) == "240")),
+                                air.Option("L/480 (sensitive finishes)", value="480",
+                                           selected=(str(data.deflection_limit) == "480")), name="deflection_limit"),
+                                    class_="form-group"),
+
                             class_="grid-3"
                         ), class_="card"
                     ),
@@ -381,7 +541,8 @@ def setup_beam_routes(app):
                             render_force_inputs("Right support", "right", data, show_gravity=True),
                             class_="grid-3"
                         ),
-                        air.Button("Perform Design", type="submit", style="width: 100%; font-size: 18px; margin-top: 32px;"),
+                        air.Button("Perform Design", type="submit",
+                                   style="width: 100%; font-size: 18px; margin-top: 32px;"),
                         class_="card"
                     ),
                     method="post", action="/beam/design"
@@ -393,14 +554,14 @@ def setup_beam_routes(app):
     async def beam_design(request: air.Request):
         form_data = await request.form()
         cookie_data = json.dumps(dict(form_data))
-        
+
         try:
             data = BeamDesignModel(**form_data)
         except Exception as e:
             error_html = str(expressive_layout(
                 air.Header(
                     air.A("← Go Back", href="/beam", class_="back-link no-print"),
-                    air.H1("Calculation Error"), 
+                    air.H1("Calculation Error"),
                     air.P("Form validation failed.", class_="subtitle"),
                     class_="module-header"
                 ),
@@ -409,32 +570,206 @@ def setup_beam_routes(app):
             resp = AirResponse(content=error_html, media_type="text/html")
             resp.set_cookie("beam_inputs", cookie_data, max_age=2592000)
             return resp
-        
+
         try:
             sdc_enum, frame_enum = SeismicDesignCategory(data.sdc), FrameSystem(data.frame_system)
             cover = 40.0
-            
+
             ec = base_aci_lib.aci.get_concrete_modulus(data.fc_prime)
-            mat_props = MaterialProperties(fc_prime=data.fc_prime, fy=data.fy, fu=data.fy * 1.25, fyt=data.fyt, fut=data.fyt * 1.25, es=200000.0, ec=ec, gamma_c=24.0, description=f"Custom")
-            beam_geom = BeamGeometry(length=data.length, width=data.width, height=data.height, effective_depth=data.effective_depth, cover=cover, flange_width=0.0, flange_thickness=0.0, beam_type=BeamType.RECTANGULAR, clear_span=data.clear_span, sdc=sdc_enum, frame_system=frame_enum)
-            
+            mat_props = MaterialProperties(fc_prime=data.fc_prime, fy=data.fy, fu=data.fy * 1.25, fyt=data.fyt,
+                                           fut=data.fyt * 1.25, es=200000.0, ec=ec, gamma_c=24.0, description=f"Custom")
+            beam_geom = BeamGeometry(length=data.length, width=data.width, height=data.height,
+                                     effective_depth=data.effective_depth, cover=cover, flange_width=0.0,
+                                     flange_thickness=0.0, beam_type=BeamType.RECTANGULAR, clear_span=data.clear_span,
+                                     sdc=sdc_enum, frame_system=frame_enum)
+
             custom_lib = ACI318M25MemberLibrary()
-            custom_lib.beam_design = ControlledBeamDesign(data.pref_main, data.pref_stirrup)
-            
-            res_left = custom_lib.beam_design.perform_complete_beam_design(mu=data.left_mu, vu=data.left_vu, tu=data.left_tu, gravity_shear=data.left_vg, beam_geometry=beam_geom, material_props=mat_props)
-            res_mid = custom_lib.beam_design.perform_complete_beam_design(mu=data.mid_mu, vu=data.mid_vu, tu=data.mid_tu, beam_geometry=beam_geom, material_props=mat_props)
-            res_right = custom_lib.beam_design.perform_complete_beam_design(mu=data.right_mu, vu=data.right_vu, tu=data.right_tu, gravity_shear=data.right_vg, beam_geometry=beam_geom, material_props=mat_props)
-            
+            custom_lib.beam_design = ControlledBeamDesign(data.pref_main, data.pref_stirrup, data.pref_torsion)
+
+            max_as_support = 0.0
+            if frame_enum == FrameSystem.SPECIAL:
+                as_top_l = custom_lib.beam_design._get_required_steel(data.left_mu_neg, beam_geom, mat_props)
+                as_bot_l = max(custom_lib.beam_design._get_required_steel(data.left_mu_pos, beam_geom, mat_props),
+                               0.5 * as_top_l)
+                as_top_r = custom_lib.beam_design._get_required_steel(data.right_mu_neg, beam_geom, mat_props)
+                as_bot_r = max(custom_lib.beam_design._get_required_steel(data.right_mu_pos, beam_geom, mat_props),
+                               0.5 * as_top_r)
+                max_as_support = max(as_top_l, as_bot_l, as_top_r, as_bot_r)
+
+            res_left = custom_lib.beam_design.perform_complete_beam_design(data.left_mu_neg, data.left_mu_pos,
+                                                                           data.left_vu, beam_geom, mat_props,
+                                                                           tu=data.left_tu, gravity_shear=data.left_vg,
+                                                                           is_support=True,
+                                                                           max_as_support=max_as_support)
+            res_mid = custom_lib.beam_design.perform_complete_beam_design(data.mid_mu_neg, data.mid_mu_pos, data.mid_vu,
+                                                                          beam_geom, mat_props,
+                                                                          service_moment=data.mid_mlive, tu=data.mid_tu,
+                                                                          gravity_shear=0.0, is_support=False,
+                                                                          max_as_support=max_as_support)
+            res_right = custom_lib.beam_design.perform_complete_beam_design(data.right_mu_neg, data.right_mu_pos,
+                                                                            data.right_vu, beam_geom, mat_props,
+                                                                            tu=data.right_tu,
+                                                                            gravity_shear=data.right_vg,
+                                                                            is_support=True,
+                                                                            max_as_support=max_as_support)
+
+            # ----- UNIFICATION & CONSTRUCTABILITY ENGINE -----
+
+            # 1. Sync Stirrup Legs & Enforce Minimum Constructability
+            def get_legs(s):
+                return int(s.split("-")[0]) if "-leg" in s else 2
+
+            max_legs = max(get_legs(res_left.reinforcement.stirrups), get_legs(res_mid.reinforcement.stirrups),
+                           get_legs(res_right.reinforcement.stirrups))
+            unified_stirrup = f"{max_legs}-leg {data.pref_stirrup}" if max_legs > 2 else data.pref_stirrup
+            for r in [res_left, res_mid, res_right]: r.reinforcement.stirrups = unified_stirrup
+
+            def enforce_legs(bars):
+                if not bars: return [data.pref_main] * max_legs
+                if len(bars) < max_legs: return [data.pref_main] * max_legs
+                return list(bars)
+
+            for r in [res_left, res_mid, res_right]:
+                r.reinforcement.top_bars = enforce_legs(r.reinforcement.top_bars)
+                r.reinforcement.bottom_bars = enforce_legs(r.reinforcement.bottom_bars)
+
+            # 2. Sync Left and Right Main Bars
+            def get_area(bars):
+                return len(bars) * custom_lib.beam_design.aci.get_bar_area(bars[0]) if bars else 0.0
+
+            if get_area(res_left.reinforcement.top_bars) >= get_area(res_right.reinforcement.top_bars):
+                res_right.reinforcement.top_bars = list(res_left.reinforcement.top_bars)
+            else:
+                res_left.reinforcement.top_bars = list(res_right.reinforcement.top_bars)
+
+            if get_area(res_left.reinforcement.bottom_bars) >= get_area(res_right.reinforcement.bottom_bars):
+                res_right.reinforcement.bottom_bars = list(res_left.reinforcement.bottom_bars)
+            else:
+                res_left.reinforcement.bottom_bars = list(res_right.reinforcement.bottom_bars)
+
+            for r in [res_left, res_mid, res_right]:
+                r.reinforcement.top_area = get_area(r.reinforcement.top_bars)
+                r.reinforcement.bottom_area = get_area(r.reinforcement.bottom_bars)
+
+            # 3. Sync Stirrup Spacing (Left & Right Hinge)
+            min_hinge_s = min(res_left.reinforcement.stirrup_spacing_hinge,
+                              res_right.reinforcement.stirrup_spacing_hinge)
+            res_left.reinforcement.stirrup_spacing_hinge = min_hinge_s
+            res_right.reinforcement.stirrup_spacing_hinge = min_hinge_s
+
+            # 4. Sync Torsion Side Bars uniformly
+            max_side_area = max(get_area(res_left.reinforcement.side_bars), get_area(res_mid.reinforcement.side_bars),
+                                get_area(res_right.reinforcement.side_bars))
+            if get_area(res_left.reinforcement.side_bars) == max_side_area:
+                max_side_bars = res_left.reinforcement.side_bars
+            elif get_area(res_mid.reinforcement.side_bars) == max_side_area:
+                max_side_bars = res_mid.reinforcement.side_bars
+            else:
+                max_side_bars = res_right.reinforcement.side_bars
+
+            for r in [res_left, res_mid, res_right]:
+                r.reinforcement.side_bars = list(max_side_bars)
+                r.reinforcement.side_area = get_area(max_side_bars)
+
+            # 5. Recalculate Final Capacities for Unified Sections
+            def recalc(r, is_support, mu_top, mu_bot, tu, gravity_v):
+                phi_f = custom_lib.beam_design.phi_factors['flexure_tension_controlled']
+                phi_v = custom_lib.beam_design.phi_factors['shear']
+                phi_t = custom_lib.beam_design.phi_factors['torsion']
+
+                r.moment_capacity_top = phi_f * custom_lib.beam_design._calculate_moment_capacity(
+                    r.reinforcement.top_area, beam_geom, mat_props)
+                r.moment_capacity_bot = phi_f * custom_lib.beam_design._calculate_moment_capacity(
+                    r.reinforcement.bottom_area, beam_geom, mat_props)
+
+                actual_s = r.reinforcement.stirrup_spacing_hinge if is_support else r.reinforcement.stirrup_spacing
+                r.shear_capacity = phi_v * custom_lib.beam_design._calculate_shear_capacity(beam_geom, mat_props,
+                                                                                            r.reinforcement.stirrups,
+                                                                                            actual_s)
+
+                Vc = 0.17 * math.sqrt(mat_props.fc_prime) * beam_geom.width * beam_geom.effective_depth
+                if beam_geom.frame_system == FrameSystem.SPECIAL and (
+                        r.capacity_shear_ve * 1000 - gravity_v * 1000) > 0.5 * (r.capacity_shear_ve * 1000):
+                    Vc = 0.0
+
+                if r.reinforcement.torsion_required:
+                    r.torsion_capacity = phi_t * custom_lib.beam_design._calculate_torsion_capacity(beam_geom,
+                                                                                                    mat_props,
+                                                                                                    r.reinforcement.stirrups,
+                                                                                                    actual_s,
+                                                                                                    r.capacity_shear_ve * 1000,
+                                                                                                    Vc)
+
+                util_m_top = mu_top / r.moment_capacity_top if r.moment_capacity_top > 0 else 1.0
+                util_m_bot = mu_bot / r.moment_capacity_bot if r.moment_capacity_bot > 0 else 1.0
+                util_v = r.capacity_shear_ve / r.shear_capacity if r.shear_capacity > 0 else 1.0
+                util_t = tu / r.torsion_capacity if r.torsion_capacity > 0 else (9.99 if tu > 0 else 0.0)
+                r.utilization_ratio = max(util_m_top, util_m_bot, util_v, util_t)
+
+            recalc(res_left, True, data.left_mu_neg, data.left_mu_pos, data.left_tu, data.left_vg)
+            recalc(res_mid, False, data.mid_mu_neg, data.mid_mu_pos, data.mid_tu, 0.0)
+            recalc(res_right, True, data.right_mu_neg, data.right_mu_pos, data.right_tu, data.right_vg)
+            # ----- END UNIFICATION ENGINE -----
+
             vol_concrete, area_formwork, total_kg, rebar_rows = calculate_qto(beam_geom, res_left, res_mid, res_right)
-            
-            Ec, Ig = mat_props.ec, (data.width * (data.height**3)) / 12.0
-            delta_live = (5 * data.mid_mlive * 1e6 * (data.length**2)) / (48 * Ec * Ig) if Ig > 0 else 0
-            delta_sus = (5 * data.mid_msus * 1e6 * (data.length**2)) / (48 * Ec * Ig) if Ig > 0 else 0
-            
-            rho_prime = res_mid.reinforcement.compression_area / (data.width * data.effective_depth) if (data.width * data.effective_depth) > 0 else 0
-            delta_long = delta_sus * (1 + (2.0 / (1 + 50 * rho_prime))) + delta_live
-            
-            lim_live, lim_long = data.length / 360, data.length / 240
+
+            # ---------------------------------------------------------
+            # RIGOROUS ACI 318-25 DEFLECTION CALCULATION (Effective I)
+            # ---------------------------------------------------------
+            L_mm = float(data.length)
+            M_l = float(data.mid_mlive)
+
+            M_d = float(data.mid_mdead)
+            M_sus = M_d + 0.5 * M_l
+            M_tot = M_d + M_l
+
+            fr = 0.62 * math.sqrt(data.fc_prime)
+            Ec = mat_props.ec
+            Ig = (data.width * (data.height ** 3)) / 12.0
+            yt = data.height / 2.0
+            M_cr = (fr * Ig) / yt / 1e6
+
+            n_ratio = 200000.0 / Ec
+            As_bot = res_mid.reinforcement.bottom_area
+            rho_bot = As_bot / (data.width * data.effective_depth) if (data.width * data.effective_depth) > 0 else 0
+
+            Icr = Ig
+            if rho_bot > 0:
+                k_val = math.sqrt((rho_bot * n_ratio) ** 2 + 2 * rho_bot * n_ratio) - rho_bot * n_ratio
+                kd = k_val * data.effective_depth
+                Icr = (data.width * kd ** 3) / 3.0 + n_ratio * As_bot * (data.effective_depth - kd) ** 2
+                Icr = min(Icr, Ig)
+
+            def calc_Ie(M_applied):
+                if M_applied <= 0: return Ig
+                limit_m = (2.0 / 3.0) * M_cr
+                if M_applied <= limit_m:
+                    return Ig
+                ratio = limit_m / M_applied
+                Ie_calc = Icr / (1.0 - (ratio ** 2) * (1.0 - Icr / Ig))
+                return max(Icr, min(Ie_calc, Ig))
+
+            Ie_d = calc_Ie(M_d)
+            Ie_sus = calc_Ie(M_sus)
+            Ie_tot = calc_Ie(M_tot)
+
+            delta_d_imm = (5 * M_d * 1e6 * (L_mm ** 2)) / (48 * Ec * Ie_d) if Ie_d > 0 else 0
+            delta_sus_imm = (5 * M_sus * 1e6 * (L_mm ** 2)) / (48 * Ec * Ie_sus) if Ie_sus > 0 else 0
+            delta_tot_imm = (5 * M_tot * 1e6 * (L_mm ** 2)) / (48 * Ec * Ie_tot) if Ie_tot > 0 else 0
+
+            delta_live = max(0.0, delta_tot_imm - delta_d_imm)
+
+            As_top = res_mid.reinforcement.top_area
+            rho_prime = As_top / (data.width * data.effective_depth) if (data.width * data.effective_depth) > 0 else 0
+            time_factor = 2.0 / (1 + 50 * rho_prime)
+
+            delta_long = delta_live + time_factor * delta_sus_imm
+
+            lim_live = data.length / 360
+
+            lim_long_divisor = float(data.deflection_limit)
+            lim_long = data.length / lim_long_divisor
+
             status_live = "#16A34A" if delta_live <= lim_live else "#DC2626"
             status_long = "#16A34A" if delta_long <= lim_long else "#DC2626"
 
@@ -457,14 +792,23 @@ def setup_beam_routes(app):
                     air.H2("Input Parameters"),
                     air.Div(
                         air.Div(
-                            air.H3("Geometry and Materials", style="font-size: 16px; margin-bottom: 8px; border:none; padding:0;"),
+                            air.H3("Geometry and Materials",
+                                   style="font-size: 16px; margin-bottom: 8px; border:none; padding:0;"),
                             air.Ul(
-                                air.Li(air.Strong("Dimensions"), air.Span(f"{data.width}mm × {data.height}mm (d = {data.effective_depth}mm)", class_="data-value")),
-                                air.Li(air.Strong("Spans"), air.Span(f"L = {data.length}mm, Ln = {data.clear_span}mm", class_="data-value")),
-                                air.Li(air.Strong("Seismic"), air.Span(f"SDC {data.sdc}, {frame_enum.value.title()}", class_="data-value")),
-                                air.Li(air.Strong("Concrete"), air.Span(f"f'c = {data.fc_prime} MPa", class_="data-value")),
-                                air.Li(air.Strong("Steel"), air.Span(f"fy = {data.fy} MPa, fyt = {data.fyt} MPa", class_="data-value")),
-                                air.Li(air.Strong("Rebar sizes"), air.Span(f"Main {data.pref_main}, Ties {data.pref_stirrup}", class_="data-value")),
+                                air.Li(air.Strong("Dimensions"),
+                                       air.Span(f"{data.width}mm × {data.height}mm (d = {data.effective_depth}mm)",
+                                                class_="data-value")),
+                                air.Li(air.Strong("Spans"),
+                                       air.Span(f"L = {data.length}mm, Ln = {data.clear_span}mm", class_="data-value")),
+                                air.Li(air.Strong("Seismic"),
+                                       air.Span(f"SDC {data.sdc}, {frame_enum.value.title()}", class_="data-value")),
+                                air.Li(air.Strong("Concrete"),
+                                       air.Span(f"f'c = {data.fc_prime} MPa", class_="data-value")),
+                                air.Li(air.Strong("Steel"),
+                                       air.Span(f"fy = {data.fy} MPa, fyt = {data.fyt} MPa", class_="data-value")),
+                                air.Li(air.Strong("Rebar sizes"), air.Span(
+                                    f"Main {data.pref_main}, Stirrups {data.pref_stirrup}, Web {data.pref_torsion}",
+                                    class_="data-value")),
                             ), class_="section-box"
                         ),
                         air.Div(
@@ -472,12 +816,20 @@ def setup_beam_routes(app):
                             air.Table(
                                 air.Thead(air.Tr(air.Th("Force"), air.Th("Left"), air.Th("Midspan"), air.Th("Right"))),
                                 air.Tbody(
-                                    air.Tr(air.Td(air.Strong("Mu (kN·m)")), air.Td(str(data.left_mu)), air.Td(str(data.mid_mu)), air.Td(str(data.right_mu))),
-                                    air.Tr(air.Td(air.Strong("Vu (kN)")), air.Td(str(data.left_vu)), air.Td(str(data.mid_vu)), air.Td(str(data.right_vu))),
-                                    air.Tr(air.Td(air.Strong("Tu (kN·m)")), air.Td(str(data.left_tu)), air.Td(str(data.mid_tu)), air.Td(str(data.right_tu))),
-                                    air.Tr(air.Td(air.Strong("Vg (kN)")), air.Td(str(data.left_vg)), air.Td("-"), air.Td(str(data.right_vg))),
-                                    air.Tr(air.Td(air.Strong("M_live (kN·m)")), air.Td("-"), air.Td(str(data.mid_mlive)), air.Td("-")),
-                                    air.Tr(air.Td(air.Strong("M_sus (kN·m)")), air.Td("-"), air.Td(str(data.mid_msus)), air.Td("-"))
+                                    air.Tr(air.Td(air.Strong("-Mu (kN·m)")), air.Td(str(data.left_mu_neg)),
+                                           air.Td(str(data.mid_mu_neg)), air.Td(str(data.right_mu_neg))),
+                                    air.Tr(air.Td(air.Strong("+Mu (kN·m)")), air.Td(str(data.left_mu_pos)),
+                                           air.Td(str(data.mid_mu_pos)), air.Td(str(data.right_mu_pos))),
+                                    air.Tr(air.Td(air.Strong("Vu (kN)")), air.Td(str(data.left_vu)),
+                                           air.Td(str(data.mid_vu)), air.Td(str(data.right_vu))),
+                                    air.Tr(air.Td(air.Strong("Tu (kN·m)")), air.Td(str(data.left_tu)),
+                                           air.Td(str(data.mid_tu)), air.Td(str(data.right_tu))),
+                                    air.Tr(air.Td(air.Strong("Vg (kN)")), air.Td(str(data.left_vg)), air.Td("-"),
+                                           air.Td(str(data.right_vg))),
+                                    air.Tr(air.Td(air.Strong("Md (kN-m)")), air.Td("-"), air.Td(str(data.mid_mdead)),
+                                           air.Td("-")),
+                                    air.Tr(air.Td(air.Strong("Ml (kN-m)")), air.Td("-"), air.Td(str(data.mid_mlive)),
+                                           air.Td("-"))
                                 )
                             ), class_="section-box"
                         ), class_="grid-2"
@@ -488,29 +840,47 @@ def setup_beam_routes(app):
                     air.H2("Serviceability Checks"),
                     generate_beam_elevation_css(data.length, data.height, res_left, res_mid, res_right),
                     air.Div(
-                        air.Div(air.P(air.Strong("Immediate live load deflection = "), air.Span(f"{delta_live:.2f} mm", style=f"color: {status_live}; font-weight: 700;"), f" (Limit: L/360 = {lim_live:.1f} mm)"), style=f"padding: 16px; border-radius: 8px; border: 1px solid {'#bbf7d0' if delta_live <= lim_live else '#fecaca'}; background: {'#f0fdf4' if delta_live <= lim_live else '#fef2f2'}; margin-bottom: 12px;"),
-                        air.Div(air.P(air.Strong("Long-term deflection = "), air.Span(f"{delta_long:.2f} mm", style=f"color: {status_long}; font-weight: 700;"), f" (Limit: L/240 = {lim_long:.1f} mm)"), style=f"padding: 16px; border-radius: 8px; border: 1px solid {'#bbf7d0' if delta_long <= lim_long else '#fecaca'}; background: {'#f0fdf4' if delta_long <= lim_long else '#fef2f2'};"),
+                        air.Div(air.P(air.Strong("Immediate live load deflection = "), air.Span(f"{delta_live:.2f} mm",
+                                                                                                style=f"color: {status_live}; font-weight: 700;"),
+                                      f" (Limit: L/360 = {lim_live:.1f} mm)"),
+                                style=f"padding: 16px; border-radius: 8px; border: 1px solid {'#bbf7d0' if delta_live <= lim_live else '#fecaca'}; background: {'#f0fdf4' if delta_live <= lim_live else '#fef2f2'}; margin-bottom: 12px;"),
+                        air.Div(air.P(air.Strong("Long-term deflection = "), air.Span(f"{delta_long:.2f} mm",
+                                                                                      style=f"color: {status_long}; font-weight: 700;"),
+                                      f" (Limit: L/{int(lim_long_divisor)} = {lim_long:.1f} mm)"),
+                                style=f"padding: 16px; border-radius: 8px; border: 1px solid {'#bbf7d0' if delta_long <= lim_long else '#fecaca'}; background: {'#f0fdf4' if delta_long <= lim_long else '#fef2f2'};"),
+
+                        air.Div(
+                            air.P(air.Strong("Some values: "),
+                                  f"M_cr = {M_cr:.1f} kN-m | I_g = {Ig / 1e6:.0f} × 10⁶ mm⁴ | I_e (total) = {Ie_tot / 1e6:.0f} × 10⁶ mm⁴",
+                                  style="font-size: 13px; color: var(--text-muted);"),
+                            style="padding: 0 16px;"
+                        ),
                         style="margin-bottom: 16px;"
                     ), class_="card"
                 ),
                 air.Div(
                     air.H2("Design Results"),
                     air.Div(
-                        render_section_results("Left support", res_left, data.width, data.height, cover, is_support=True),
-                        render_section_results("Midspan", res_mid, data.width, data.height, cover, is_support=False),
-                        render_section_results("Right support", res_right, data.width, data.height, cover, is_support=True),
+                        render_section_results("Left support", res_left, data.width, data.height, cover),
+                        render_section_results("Midspan", res_mid, data.width, data.height, cover),
+                        render_section_results("Right support", res_right, data.width, data.height, cover),
                         class_="grid-3"
                     ), class_="card"
                 ),
                 air.Div(
                     air.H2("Material Takeoff"),
                     air.Div(
-                        air.Div(air.Div("Concrete Volume", class_="metric-label"), air.Div(f"{vol_concrete:.2f} m³", class_="metric-value"), class_="metric-card"),
-                        air.Div(air.Div("Formwork Area", class_="metric-label"), air.Div(f"{area_formwork:.2f} m²", class_="metric-value"), class_="metric-card blue"),
-                        air.Div(air.Div("Rebar Weight", class_="metric-label"), air.Div(f"{total_kg:.1f} kg", class_="metric-value"), class_="metric-card green"),
+                        air.Div(air.Div("Concrete Volume", class_="metric-label"),
+                                air.Div(f"{vol_concrete:.2f} m³", class_="metric-value"), class_="metric-card"),
+                        air.Div(air.Div("Formwork Area", class_="metric-label"),
+                                air.Div(f"{area_formwork:.2f} m²", class_="metric-value"), class_="metric-card blue"),
+                        air.Div(air.Div("Rebar Weight", class_="metric-label"),
+                                air.Div(f"{total_kg:.1f} kg", class_="metric-value"), class_="metric-card green"),
                         class_="grid-3"
                     ),
-                    air.Table(air.Thead(air.Tr(air.Th("Location"), air.Th("Size"), air.Th("Qty"), air.Th("Required Length/Bar"), air.Th("Recommended Order"), air.Th("Weight"))), air.Tbody(*rebar_rows)),
+                    air.Table(air.Thead(
+                        air.Tr(air.Th("Location"), air.Th("Size"), air.Th("Qty"), air.Th("Required Length/Bar"),
+                               air.Th("Recommended Order"), air.Th("Weight"))), air.Tbody(*rebar_rows)),
                     class_="card"
                 )
             )
@@ -518,7 +888,7 @@ def setup_beam_routes(app):
             full_html_layout = str(expressive_layout(
                 air.Header(
                     air.A("← Edit Inputs", href="/beam", class_="back-link no-print"),
-                    air.H1("RC Beam Designer"), 
+                    air.H1("RC Beam Designer"),
                     air.P("in accordance with ACI 318M-25", class_="subtitle"),
                     class_="module-header"
                 ),
@@ -533,7 +903,7 @@ def setup_beam_routes(app):
             error_html = str(expressive_layout(
                 air.Header(
                     air.A("← Go Back", href="/beam", class_="back-link no-print"),
-                    air.H1("Calculation Error"), 
+                    air.H1("Calculation Error"),
                     air.P("Failed to process section demands.", class_="subtitle"),
                     class_="module-header"
                 ),

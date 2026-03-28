@@ -133,7 +133,7 @@ def expressive_layout(*content):
                 air.Div(
                     air.P("(c) 2026 by Jaydee Lucero • written in Python 3.14 • powered by Air web framework", style="margin-bottom: 12px;"),
                     air.Div(
-                        air.A(air.Div(class_="icon-github"), href="https://github.com/arisa-chan/rc-beam-designer-web", target="_blank", title="Project Repository", class_="social-link"),
+                        air.A(air.Div(class_="icon-github"), href="https://github.com/arisa-chan/rc-design-collection-web", target="_blank", title="Project Repository", class_="social-link"),
                         air.A(air.Div(class_="icon-facebook"), href="https://www.facebook.com/jaydee.lucero", target="_blank", title="Facebook Page", class_="social-link"),
                         air.A(air.Div(class_="icon-linkedin"), href="https://www.linkedin.com/in/jaydee-lucero-977070200/", target="_blank", title="LinkedIn Profile", class_="social-link"),
                         air.A(air.Div(class_="icon-github"), href="https://github.com/arisa-chan", target="_blank", title="GitHub Profile", class_="social-link"),
