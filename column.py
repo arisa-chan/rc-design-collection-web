@@ -40,18 +40,38 @@ class ColumnDesignModel(BaseModel):
     fy: float = AirField(default=415.0)
     fyt: float = AirField(default=415.0)
 
-    # Loads
+    # Column Loads
     pu: float = AirField(default=2500.0)
-    mux: float = AirField(default=150.0)
-    muy: float = AirField(default=80.0)
-    vux: float = AirField(default=120.0)
-    vuy: float = AirField(default=90.0)
 
-    # Seismic Joint Forces (SMF)
-    sum_mpr_top: float = AirField(default=450.0)
-    sum_mpr_bot: float = AirField(default=450.0)
-    sum_mnb_top: float = AirField(default=350.0)
-    sum_mnb_bot: float = AirField(default=350.0)
+    top_mux: float = AirField(default=150.0)
+    top_muy: float = AirField(default=80.0)
+    top_vux: float = AirField(default=120.0)
+    top_vuy: float = AirField(default=90.0)
+
+    bot_mux: float = AirField(default=180.0)
+    bot_muy: float = AirField(default=90.0)
+    bot_vux: float = AirField(default=120.0)
+    bot_vuy: float = AirField(default=90.0)
+
+    # Beam details (Top Joint) - For SC/WB Check
+    top_b1_b: float = AirField(default=300.0)
+    top_b1_d: float = AirField(default=440.0)
+    top_b1_as_top: float = AirField(default=1200.0)
+    top_b1_as_bot: float = AirField(default=600.0)
+    top_b2_b: float = AirField(default=300.0)
+    top_b2_d: float = AirField(default=440.0)
+    top_b2_as_top: float = AirField(default=1200.0)
+    top_b2_as_bot: float = AirField(default=600.0)
+
+    # Beam details (Bottom Joint) - For SC/WB Check
+    bot_b1_b: float = AirField(default=300.0)
+    bot_b1_d: float = AirField(default=440.0)
+    bot_b1_as_top: float = AirField(default=1200.0)
+    bot_b1_as_bot: float = AirField(default=600.0)
+    bot_b2_b: float = AirField(default=300.0)
+    bot_b2_d: float = AirField(default=440.0)
+    bot_b2_as_top: float = AirField(default=1200.0)
+    bot_b2_as_bot: float = AirField(default=600.0)
 
 
 # ----------------------------------------------------------------------
@@ -70,21 +90,38 @@ class ControlledColumnDesign(ACI318M25ColumnDesign):
         min_bars = 4 if geometry.shape == ColumnShape.RECTANGULAR else 6
         num_bars = max(min_bars, math.ceil(As_required / area))
 
-        # Enforce symmetry
         if geometry.shape == ColumnShape.RECTANGULAR and num_bars % 2 != 0:
             num_bars += 1
 
         return [self.pref_main] * num_bars
 
 
+def get_beam_capacities(b, d, as_top, as_bot, fc, fy):
+    """Calculates Nominal and Probable Flexural Capacities of a single beam framing into a joint."""
+    if b <= 0 or d <= 0: return 0, 0, 0, 0
+    fy_pr = 1.25 * fy
+
+    # Nominal Capacities (Mnb) - using fy
+    a_top = (as_top * fy) / (0.85 * fc * b) if b > 0 else 0
+    mn_neg = as_top * fy * (d - a_top / 2.0) / 1e6 if as_top > 0 else 0
+
+    a_bot = (as_bot * fy) / (0.85 * fc * b) if b > 0 else 0
+    mn_pos = as_bot * fy * (d - a_bot / 2.0) / 1e6 if as_bot > 0 else 0
+
+    # Probable Capacities (Mpr) - using 1.25fy
+    a_pr_top = (as_top * fy_pr) / (0.85 * fc * b) if b > 0 else 0
+    mpr_neg = as_top * fy_pr * (d - a_pr_top / 2.0) / 1e6 if as_top > 0 else 0
+
+    a_pr_bot = (as_bot * fy_pr) / (0.85 * fc * b) if b > 0 else 0
+    mpr_pos = as_bot * fy_pr * (d - a_pr_bot / 2.0) / 1e6 if as_bot > 0 else 0
+
+    return mn_neg, mn_pos, mpr_neg, mpr_pos
+
+
 def calculate_column_qto(geom: ColumnGeometry, res: 'ColumnAnalysisResult'):
-    # Dimensions in meters
     b_m, h_m, L_m = geom.width / 1000.0, geom.depth / 1000.0, geom.height / 1000.0
-
     vol_concrete = b_m * h_m * L_m
-    # Formwork area (Perimeter + 0.1m clearance based on Fajardo)
     area_formwork = (2 * (b_m + h_m) + 0.1) * L_m
-
     rebar_rows, total_kg = [], 0.0
 
     def get_db(bar_str):
@@ -95,7 +132,6 @@ def calculate_column_qto(geom: ColumnGeometry, res: 'ColumnAnalysisResult'):
         except:
             return 16.0
 
-    # 1D Bin Packing
     def get_best_commercial_order(req_len, qty, db_mm):
         stocks = [6.0, 7.5, 9.0, 10.5, 12.0]
         splice_m = 40 * db_mm / 1000.0
@@ -121,7 +157,6 @@ def calculate_column_qto(geom: ColumnGeometry, res: 'ColumnAnalysisResult'):
             order_parts = []
             if total_12m > 0: order_parts.append(f"{total_12m} x 12.0m")
             if rem > 0 and best_count > 0: order_parts.append(f"{best_count} x {best_S}m")
-
             return " + ".join(order_parts), (total_12m * 12.0 + (best_count * best_S if rem > 0 else 0))
         else:
             best_waste, best_S, best_count = float('inf'), 12.0, 0
@@ -141,7 +176,6 @@ def calculate_column_qto(geom: ColumnGeometry, res: 'ColumnAnalysisResult'):
         db = get_db(bars_list[0])
         if db == 0: return
         num_bars = len(bars_list)
-        # Length = Column Height + Splice Lap (Dowel for next level)
         req_len = base_len + (splice_factor * db / 1000.0)
         stock_text, total_ordered_m = get_best_commercial_order(req_len, num_bars, db)
         weight_kg = total_ordered_m * ((db ** 2) / 162.0)
@@ -151,12 +185,9 @@ def calculate_column_qto(geom: ColumnGeometry, res: 'ColumnAnalysisResult'):
                    air.Td(air.Span(stock_text, style="color: #2563eb; font-weight: 600;")),
                    air.Td(f"{weight_kg:.1f} kg")))
 
-    # Main Bars
     add_rebar("Main Longitudinal", res.reinforcement.longitudinal_bars, L_m, splice_factor=40.0)
 
-    # Ties
     s_m = max(res.reinforcement.tie_spacing, 50.0) / 1000.0
-    # Assuming uniform spacing for conservative order estimate
     total_stirrups = int(L_m / s_m)
 
     if total_stirrups > 0:
@@ -164,12 +195,9 @@ def calculate_column_qto(geom: ColumnGeometry, res: 'ColumnAnalysisResult'):
         c_m = geom.cover / 1000.0
         legs_x, legs_y = res.reinforcement.tie_legs_x, res.reinforcement.tie_legs_y
 
-        # Outer Hoop
         outer_len = 2 * (b_m - 2 * c_m) + 2 * (h_m - 2 * c_m) + 24 * db_t / 1000.0
-        # Internal Cross-Ties (Approximate length across core)
         cross_ties_len = max(0, legs_y - 2) * (h_m - 2 * c_m + 24 * db_t / 1000.0) + max(0, legs_x - 2) * (
                     b_m - 2 * c_m + 24 * db_t / 1000.0)
-
         tie_len_m = outer_len + cross_ties_len
 
         total_tie_length_m = total_stirrups * tie_len_m
@@ -187,35 +215,6 @@ def calculate_column_qto(geom: ColumnGeometry, res: 'ColumnAnalysisResult'):
 # ----------------------------------------------------------------------
 # 3. VISUALIZATION COMPONENTS
 # ----------------------------------------------------------------------
-def generate_column_elevation_css(height, clear_height, s_tie):
-    vis_height = 240
-    vis_width = 80
-
-    lo = max(500, clear_height / 6.0, 450)  # Approx hinge length
-
-    tie_elements = []
-    y, loop_guard = 20.0, 0
-    while y < height - 20.0 and loop_guard < 200:
-        loop_guard += 1
-        # Color red in plastic hinge zones (top and bottom)
-        color = "#db2777" if y <= lo or y >= height - lo else "#9ca3af"
-        tie_elements.append(air.Div(
-            style=f"position: absolute; top: {(y / height) * 100}%; left: 10%; right: 10%; height: 2px; background: {color}; z-index: 1;"))
-        y += s_tie
-
-    col_body = air.Div(
-        air.Div(
-            style="position: absolute; left: 15%; top: -10px; bottom: -10px; width: 4px; background: #2563eb; z-index: 2;"),
-        air.Div(
-            style="position: absolute; right: 15%; top: -10px; bottom: -10px; width: 4px; background: #2563eb; z-index: 2;"),
-        *tie_elements,
-        style=f"position: relative; width: {vis_width}px; height: {vis_height}px; background: #f3f4f6; border: 3px solid #111827; border-radius: 2px; overflow: visible; box-sizing: border-box; margin: 0 auto;"
-    )
-
-    return air.Div(col_body,
-                   style="padding: 24px; background: #ffffff; border-radius: 8px; border: 2px dashed #e5e7eb; display: flex; justify-content: center; align-items: center;")
-
-
 def generate_column_section_css(width, depth, cover, num_bars, legs_x, legs_y):
     scale = min(200 / max(width, 1), 200 / max(depth, 1))
     draw_w, draw_h, c_s = width * scale, depth * scale, cover * scale
@@ -223,49 +222,58 @@ def generate_column_section_css(width, depth, cover, num_bars, legs_x, legs_y):
     children = []
     core_w, core_h = draw_w - 2 * c_s, draw_h - 2 * c_s
 
-    # Draw Outer Tie
     if core_w > 0 and core_h > 0:
+        # Outer Tie
         children.append(air.Div(
             style=f"position: absolute; left: {c_s}px; top: {c_s}px; width: {core_w}px; height: {core_h}px; border: 2px dashed #db2777; border-radius: 4px; box-sizing: border-box;"))
-
-        # Inner Tie Legs X (Vertical lines)
+        # Inner Ties (X)
         if legs_x > 2:
             spacing_x = core_w / (legs_x - 1)
             for i in range(1, legs_x - 1):
                 children.append(air.Div(
                     style=f"position: absolute; left: {c_s + i * spacing_x}px; top: {c_s}px; width: 0px; height: {core_h}px; border-left: 2px dashed #db2777; box-sizing: border-box;"))
-
-        # Inner Tie Legs Y (Horizontal lines)
+        # Inner Ties (Y)
         if legs_y > 2:
             spacing_y = core_h / (legs_y - 1)
             for i in range(1, legs_y - 1):
                 children.append(air.Div(
                     style=f"position: absolute; left: {c_s}px; top: {c_s + i * spacing_y}px; width: {core_w}px; height: 0px; border-top: 2px dashed #db2777; box-sizing: border-box;"))
 
-    # Estimate Bar Distribution
-    nx = legs_y
-    ny = legs_x
-    total_placed = 0
-
     def add_bar(x, y):
         children.append(air.Div(
             style=f"position: absolute; left: {x - 6}px; top: {y - 6}px; width: 12px; height: 12px; background: #2563eb; border: 2px solid #111827; border-radius: 50%; box-sizing: border-box;"))
 
-    # Top/Bottom Rows
-    if nx > 0 and core_w > 0:
-        sp_x = core_w / (nx - 1) if nx > 1 else 0
-        for i in range(nx):
-            add_bar(c_s + i * sp_x, c_s)
-            add_bar(c_s + i * sp_x, c_s + core_h)
-            total_placed += 2
+    # FIX: Calculate exact bar distribution using the mathematical engine logic
+    nx_face = 0
+    ny_face = 0
+    if num_bars > 4:
+        rem = num_bars - 4
+        ratio = width / (width + depth) if (width + depth) > 0 else 0.5
+        nx_inter = 2 * int(round(rem * ratio / 2.0))
+        ny_inter = rem - nx_inter
+        nx_face = nx_inter // 2
+        ny_face = ny_inter // 2
 
-    # Side Rows (excluding corners already placed)
-    if ny > 2 and core_h > 0:
-        sp_y = core_h / (ny - 1)
-        for i in range(1, ny - 1):
-            add_bar(c_s, c_s + i * sp_y)
-            add_bar(c_s + core_w, c_s + i * sp_y)
-            total_placed += 2
+    if core_w >= 0 and core_h >= 0:
+        # 4 Corners
+        add_bar(c_s, c_s)
+        add_bar(c_s + core_w, c_s)
+        add_bar(c_s, c_s + core_h)
+        add_bar(c_s + core_w, c_s + core_h)
+
+        # Top and Bottom faces
+        if nx_face > 0:
+            sp_x = core_w / (nx_face + 1)
+            for i in range(1, nx_face + 1):
+                add_bar(c_s + i * sp_x, c_s)
+                add_bar(c_s + i * sp_x, c_s + core_h)
+
+        # Left and Right faces
+        if ny_face > 0:
+            sp_y = core_h / (ny_face + 1)
+            for i in range(1, ny_face + 1):
+                add_bar(c_s, c_s + i * sp_y)
+                add_bar(c_s + core_w, c_s + i * sp_y)
 
     concrete_block = air.Div(*children,
                              style=f"position: relative; width: {draw_w}px; height: {draw_h}px; background: #f3f4f6; border: 3px solid #111827; border-radius: 4px; box-sizing: border-box;")
@@ -276,6 +284,59 @@ def generate_column_section_css(width, depth, cover, num_bars, legs_x, legs_y):
                         style="position: absolute; left: -65px; top: 50%; transform: translateY(-50%); font-family: monospace; font-weight: 700; color: #6b7280;"),
                 concrete_block, style="position: relative; display: inline-block; margin-left: 40px;"),
         style="display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 32px 0; background: #ffffff; border-radius: 8px; border: 2px dashed #e5e7eb; height: 100%;"
+    )
+
+
+def render_beam_modal(modal_id, title, prefix, data):
+    modal_style = "display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.6);"
+    content_style = "background-color: #fefefe; margin: 5% auto; padding: 24px; border: 1px solid #888; width: 90%; max-width: 600px; border-radius: 8px; position: relative;"
+    close_style = "color: #aaa; position: absolute; right: 20px; top: 15px; font-size: 28px; font-weight: bold; cursor: pointer;"
+
+    return air.Div(
+        air.Div(
+            air.Span("×", style=close_style, onclick=f"document.getElementById('{modal_id}').style.display='none'"),
+            air.H3(title, style="margin-bottom: 24px; color: #1e3a8a;"),
+            air.Div(
+                air.Div(
+                    air.H4("Beam 1 (e.g., Left Face)", style="margin-bottom: 12px; color: #4b5563;"),
+                    air.Div(air.Label("Width b (mm)"),
+                            air.Input(type="number", name=f"{prefix}_b1_b", value=str(getattr(data, f"{prefix}_b1_b")),
+                                      step="any"), class_="form-group"),
+                    air.Div(air.Label("Eff. Depth d (mm)"),
+                            air.Input(type="number", name=f"{prefix}_b1_d", value=str(getattr(data, f"{prefix}_b1_d")),
+                                      step="any"), class_="form-group"),
+                    air.Div(air.Label("As Top (mm²)"), air.Input(type="number", name=f"{prefix}_b1_as_top",
+                                                                 value=str(getattr(data, f"{prefix}_b1_as_top")),
+                                                                 step="any"), class_="form-group"),
+                    air.Div(air.Label("As Bot (mm²)"), air.Input(type="number", name=f"{prefix}_b1_as_bot",
+                                                                 value=str(getattr(data, f"{prefix}_b1_as_bot")),
+                                                                 step="any"), class_="form-group"),
+                    class_="section-box"
+                ),
+                air.Div(
+                    air.H4("Beam 2 (e.g., Right Face)", style="margin-bottom: 12px; color: #4b5563;"),
+                    air.Div(air.Label("Width b (mm)"),
+                            air.Input(type="number", name=f"{prefix}_b2_b", value=str(getattr(data, f"{prefix}_b2_b")),
+                                      step="any"), class_="form-group"),
+                    air.Div(air.Label("Eff. Depth d (mm)"),
+                            air.Input(type="number", name=f"{prefix}_b2_d", value=str(getattr(data, f"{prefix}_b2_d")),
+                                      step="any"), class_="form-group"),
+                    air.Div(air.Label("As Top (mm²)"), air.Input(type="number", name=f"{prefix}_b2_as_top",
+                                                                 value=str(getattr(data, f"{prefix}_b2_as_top")),
+                                                                 step="any"), class_="form-group"),
+                    air.Div(air.Label("As Bot (mm²)"), air.Input(type="number", name=f"{prefix}_b2_as_bot",
+                                                                 value=str(getattr(data, f"{prefix}_b2_as_bot")),
+                                                                 step="any"), class_="form-group"),
+                    class_="section-box"
+                ),
+                class_="grid-2"
+            ),
+            air.Button("Save & Close", type="button",
+                       onclick=f"document.getElementById('{modal_id}').style.display='none'",
+                       style="width: 100%; margin-top: 16px; background-color: #10b981; border: none;"),
+            style=content_style
+        ),
+        id=modal_id, style=modal_style
     )
 
 
@@ -299,6 +360,11 @@ def setup_column_routes(app):
         csrf_token = getattr(request.state, "csrf_token", request.cookies.get("csrftoken", "dev_token"))
         bar_opts = ["D16", "D20", "D25", "D28", "D32", "D36"]
         tie_opts = ["D10", "D12", "D16"]
+
+        show_seismic = data.sdc in ["D", "E", "F"] and data.frame_system == "special"
+        panel_display = "block" if show_seismic else "none"
+
+        js_toggle = "var s=document.getElementsByName('sdc')[0].value; var f=document.getElementsByName('frame_system')[0].value; var p=document.getElementById('seismic_joint_panel'); if((s==='D'||s==='E'||s==='F')&&f==='special'){p.style.display='block';}else{p.style.display='none';}"
 
         return expressive_layout(
             air.Header(
@@ -350,15 +416,15 @@ def setup_column_routes(app):
                                                air.Option("C", value="C", selected=(data.sdc == "C")),
                                                air.Option("D", value="D", selected=(data.sdc == "D")),
                                                air.Option("E", value="E", selected=(data.sdc == "E")),
-                                               air.Option("F", value="F", selected=(data.sdc == "F")), name="sdc"),
-                                    class_="form-group"),
+                                               air.Option("F", value="F", selected=(data.sdc == "F")), name="sdc",
+                                               onchange=js_toggle), class_="form-group"),
                             air.Div(air.Label("Moment frame system"), air.Select(
                                 air.Option("Ordinary (OMF)", value="ordinary",
                                            selected=(data.frame_system == "ordinary")),
                                 air.Option("Intermediate (IMF)", value="intermediate",
                                            selected=(data.frame_system == "intermediate")),
                                 air.Option("Special (SMF)", value="special", selected=(data.frame_system == "special")),
-                                name="frame_system"), class_="form-group"),
+                                name="frame_system", onchange=js_toggle), class_="form-group"),
 
                             air.Div(air.Label("Concrete f'c (MPa)"),
                                     air.Input(type="number", name="fc_prime", value=str(data.fc_prime), step="any",
@@ -383,43 +449,70 @@ def setup_column_routes(app):
                     air.Div(
                         air.H2("Factored Loads"),
                         air.Div(
+                            air.H3("Axial Load", style="margin-bottom: 12px;"),
+                            air.Div(air.Label("Factored Axial Pu (kN)"),
+                                    air.Input(type="number", name="pu", value=str(data.pu), step="any", required=True),
+                                    class_="form-group"),
+                            style="margin-bottom: 24px; border-bottom: 1px solid #e5e7eb; padding-bottom: 16px;"
+                        ),
+                        air.Div(
                             air.Div(
-                                air.H3("Internal Column Forces"),
-                                air.Div(air.Label("Axial Pu (kN)"),
-                                        air.Input(type="number", name="pu", value=str(data.pu), step="any",
-                                                  required=True), class_="form-group"),
+                                air.H3("Top of Column Forces"),
                                 air.Div(air.Label("Moment Mux (kN·m)"),
-                                        air.Input(type="number", name="mux", value=str(data.mux), step="any",
+                                        air.Input(type="number", name="top_mux", value=str(data.top_mux), step="any",
                                                   required=True), class_="form-group"),
                                 air.Div(air.Label("Moment Muy (kN·m)"),
-                                        air.Input(type="number", name="muy", value=str(data.muy), step="any",
+                                        air.Input(type="number", name="top_muy", value=str(data.top_muy), step="any",
                                                   required=True), class_="form-group"),
                                 air.Div(air.Label("Shear Vux (kN)"),
-                                        air.Input(type="number", name="vux", value=str(data.vux), step="any",
+                                        air.Input(type="number", name="top_vux", value=str(data.top_vux), step="any",
                                                   required=True), class_="form-group"),
                                 air.Div(air.Label("Shear Vuy (kN)"),
-                                        air.Input(type="number", name="vuy", value=str(data.vuy), step="any",
+                                        air.Input(type="number", name="top_vuy", value=str(data.top_vuy), step="any",
                                                   required=True), class_="form-group"),
                                 class_="section-box"
                             ),
                             air.Div(
-                                air.H3("Joint Demands (For SMF Capacity Check)"),
-                                air.Div(air.Label("Σ Mpr_beam @ Top (kN·m)"),
-                                        air.Input(type="number", name="sum_mpr_top", value=str(data.sum_mpr_top),
-                                                  step="any", required=True), class_="form-group"),
-                                air.Div(air.Label("Σ Mpr_beam @ Bot (kN·m)"),
-                                        air.Input(type="number", name="sum_mpr_bot", value=str(data.sum_mpr_bot),
-                                                  step="any", required=True), class_="form-group"),
-                                air.Div(air.Label("Σ Mnb_beam @ Top (kN·m)"),
-                                        air.Input(type="number", name="sum_mnb_top", value=str(data.sum_mnb_top),
-                                                  step="any", required=True), class_="form-group"),
-                                air.Div(air.Label("Σ Mnb_beam @ Bot (kN·m)"),
-                                        air.Input(type="number", name="sum_mnb_bot", value=str(data.sum_mnb_bot),
-                                                  step="any", required=True), class_="form-group"),
+                                air.H3("Bottom of Column Forces"),
+                                air.Div(air.Label("Moment Mux (kN·m)"),
+                                        air.Input(type="number", name="bot_mux", value=str(data.bot_mux), step="any",
+                                                  required=True), class_="form-group"),
+                                air.Div(air.Label("Moment Muy (kN·m)"),
+                                        air.Input(type="number", name="bot_muy", value=str(data.bot_muy), step="any",
+                                                  required=True), class_="form-group"),
+                                air.Div(air.Label("Shear Vux (kN)"),
+                                        air.Input(type="number", name="bot_vux", value=str(data.bot_vux), step="any",
+                                                  required=True), class_="form-group"),
+                                air.Div(air.Label("Shear Vuy (kN)"),
+                                        air.Input(type="number", name="bot_vuy", value=str(data.bot_vuy), step="any",
+                                                  required=True), class_="form-group"),
                                 class_="section-box"
                             ),
                             class_="grid-2"
                         ),
+
+                        # SC/WB Seismic Panel
+                        air.Div(
+                            air.H3("Seismic Joint Demands (SMF Strong-Column/Weak-Beam Check)"),
+                            air.P(
+                                "To satisfy ACI 18.7.3.2, define the beams framing into the column. The engine will automatically calculate and verify the Mpr (shear) and Mnb (flexure) requirements.",
+                                style="color: #4b5563; font-size: 14px; margin-bottom: 16px;"),
+                            air.Div(
+                                air.Button("Define Top Joint Beams", type="button",
+                                           onclick="document.getElementById('topModal').style.display='block'",
+                                           style="margin-right: 16px; background-color: #3b82f6; border:none;"),
+                                air.Button("Define Bottom Joint Beams", type="button",
+                                           onclick="document.getElementById('botModal').style.display='block'",
+                                           style="background-color: #3b82f6; border:none;"),
+                                style="display: flex;"
+                            ),
+                            id="seismic_joint_panel",
+                            style=f"display: {panel_display}; margin-top: 24px; padding: 24px; background: #eff6ff; border-radius: 8px; border: 1px dashed #93c5fd;"
+                        ),
+
+                        render_beam_modal("topModal", "Top Joint Framing Beams", "top", data),
+                        render_beam_modal("botModal", "Bottom Joint Framing Beams", "bot", data),
+
                         air.Button("Analyze Column", type="submit",
                                    style="width: 100%; font-size: 18px; margin-top: 32px;"),
                         class_="card"
@@ -456,11 +549,36 @@ def setup_column_routes(app):
                 effective_length=data.height, sdc=sdc_enum, frame_system=frame_enum
             )
 
+            max_mux = max(abs(data.top_mux), abs(data.bot_mux))
+            max_muy = max(abs(data.top_muy), abs(data.bot_muy))
+            max_vux = max(abs(data.top_vux), abs(data.bot_vux))
+            max_vuy = max(abs(data.top_vuy), abs(data.bot_vuy))
+
+            t1_mnb_neg, t1_mnb_pos, t1_mpr_neg, t1_mpr_pos = get_beam_capacities(data.top_b1_b, data.top_b1_d,
+                                                                                 data.top_b1_as_top, data.top_b1_as_bot,
+                                                                                 data.fc_prime, data.fy)
+            t2_mnb_neg, t2_mnb_pos, t2_mpr_neg, t2_mpr_pos = get_beam_capacities(data.top_b2_b, data.top_b2_d,
+                                                                                 data.top_b2_as_top, data.top_b2_as_bot,
+                                                                                 data.fc_prime, data.fy)
+
+            sum_mnb_top = max(t1_mnb_pos + t2_mnb_neg, t1_mnb_neg + t2_mnb_pos)
+            sum_mpr_top = max(t1_mpr_pos + t2_mpr_neg, t1_mpr_neg + t2_mpr_pos)
+
+            b1_mnb_neg, b1_mnb_pos, b1_mpr_neg, b1_mpr_pos = get_beam_capacities(data.bot_b1_b, data.bot_b1_d,
+                                                                                 data.bot_b1_as_top, data.bot_b1_as_bot,
+                                                                                 data.fc_prime, data.fy)
+            b2_mnb_neg, b2_mnb_pos, b2_mpr_neg, b2_mpr_pos = get_beam_capacities(data.bot_b2_b, data.bot_b2_d,
+                                                                                 data.bot_b2_as_top, data.bot_b2_as_bot,
+                                                                                 data.fc_prime, data.fy)
+
+            sum_mnb_bot = max(b1_mnb_pos + b2_mnb_neg, b1_mnb_neg + b2_mnb_pos)
+            sum_mpr_bot = max(b1_mpr_pos + b2_mpr_neg, b1_mpr_neg + b2_mpr_pos)
+
             col_loads = ColumnLoads(
-                axial_force=data.pu, moment_x=data.mux, moment_y=data.muy, shear_x=data.vux, shear_y=data.vuy,
+                axial_force=data.pu, moment_x=max_mux, moment_y=max_muy, shear_x=max_vux, shear_y=max_vuy,
                 load_condition=LoadCondition.BIAXIAL_BENDING,
-                sum_beam_mpr_top=data.sum_mpr_top, sum_beam_mpr_bot=data.sum_mpr_bot,
-                sum_beam_mnb_top=data.sum_mnb_top, sum_beam_mnb_bot=data.sum_mnb_bot
+                sum_beam_mpr_top=sum_mpr_top, sum_beam_mpr_bot=sum_mpr_bot,
+                sum_beam_mnb_top=sum_mnb_top, sum_beam_mnb_bot=sum_mnb_bot
             )
 
             engine = ControlledColumnDesign(data.pref_main, data.pref_tie)
@@ -468,7 +586,6 @@ def setup_column_routes(app):
 
             vol_concrete, area_formwork, total_kg, rebar_rows = calculate_column_qto(col_geom, res)
 
-            # Formatting results
             n_bars = len(res.reinforcement.longitudinal_bars)
             main_bar_str = f"{n_bars}x{res.reinforcement.longitudinal_bars[0]}" if n_bars > 0 else "None"
             tie_str = f"{res.reinforcement.tie_legs_x}x{res.reinforcement.tie_legs_y} legs {res.reinforcement.tie_bars} @ {res.reinforcement.tie_spacing:.0f} mm"
@@ -482,6 +599,19 @@ def setup_column_routes(app):
                     icon = "⚠️ " if any(x in note for x in ["Violation", "CRITICAL", "inadequate"]) else "ℹ️ "
                     list_items.append(air.Li(f"{icon} {note}"))
                 notes_elements.append(air.Ul(*list_items, class_="notes-list"))
+
+            sc_wb_element = ""
+            if data.sdc in ["D", "E", "F"] and data.frame_system == "special":
+                sc_wb_element = air.Div(
+                    air.H4("Calculated Joint Demands", style="color: #1e3a8a; margin-top: 16px;"),
+                    air.Ul(
+                        air.Li(air.Strong("Top Joint: "),
+                               f"Σ Mpr = {sum_mpr_top:.1f} kN-m, Σ Mnb = {sum_mnb_top:.1f} kN-m"),
+                        air.Li(air.Strong("Bot Joint: "),
+                               f"Σ Mpr = {sum_mpr_bot:.1f} kN-m, Σ Mnb = {sum_mnb_bot:.1f} kN-m")
+                    ),
+                    style="margin-top: 16px; padding: 12px; background: #f0fdf4; border-radius: 6px; border: 1px dashed #bbf7d0;"
+                )
 
             report_content = air.Main(
                 air.Div(
@@ -530,6 +660,7 @@ def setup_column_routes(app):
                                 air.Li(air.Strong("Ties / Hoops"), air.Span(tie_str, class_="data-value",
                                                                             style="color: #db2777; font-weight: bold;")),
                             ),
+                            sc_wb_element,
                             class_="section-box", style="height: 100%;"
                         ),
                         class_="grid-2"
