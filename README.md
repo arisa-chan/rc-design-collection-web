@@ -29,6 +29,6 @@ A Python web application for designing reinforced concrete members according to 
     - automatically considers constructability requirements
     - automatically considers seismic detailing when required
     ![img_6.png](img_6.png)
-  - Quantity takeoff
+- Quantity takeoff
     - considers hooks, bends, splices, and commercial bar lengths
     ![img_7.png](img_7.png)
