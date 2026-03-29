@@ -37,7 +37,7 @@ def index(request: air.Request):
                     # Column Designer Card (Placeholder for future)
                     air.Div(
                         air.H3("RC Column Designer"),
-                        air.P("v0.4 alpha. Please expect bugs, wrong results and/or missing features. Refinements ongoing.", style="color: var(--text-muted); margin-bottom: 24px;"),
+                        air.P("v0.8 beta.", style="color: var(--text-muted); margin-bottom: 24px;"),
                         air.A("Launch", href="/column", class_="button", style="width: 100%; box-sizing: border-box;"),
                         class_="card"
                     ),

@@ -3,16 +3,6 @@
 """
 ACI 318M-25 Column Design Library
 Building Code Requirements for Structural Concrete - Column Design
-
-Based on:
-- ACI CODE-318M-25 International System of Units
-- Chapter 10: Axial Force and Combined Bending and Axial Force
-- Chapter 21: Special Provisions for Seismic Design
-- Chapter 25: Development and Splices of Reinforcement
-
-@author: Enhanced by AI Assistant  
-@date: 2024
-@version: 1.2 (Distinct Transverse Yield Strength Update)
 """
 
 import math
@@ -21,27 +11,27 @@ from dataclasses import dataclass
 from enum import Enum
 from aci318m25 import ACI318M25, ConcreteStrengthClass, ReinforcementGrade, MaterialProperties
 
+
 class ColumnType(Enum):
-    """Types of columns for design"""
-    TIED = "tied"              # Tied columns with rectangular ties
-    SPIRAL = "spiral"          # Spiral columns with spiral reinforcement
-    COMPOSITE = "composite"    # Composite columns with structural steel
+    TIED = "tied"
+    SPIRAL = "spiral"
+    COMPOSITE = "composite"
+
 
 class ColumnShape(Enum):
-    """Column cross-sectional shapes"""
     RECTANGULAR = "rectangular"
     CIRCULAR = "circular"
     L_SHAPED = "l_shaped"
     T_SHAPED = "t_shaped"
 
+
 class LoadCondition(Enum):
-    """Load conditions for column design"""
     AXIAL_ONLY = "axial_only"
     UNIAXIAL_BENDING = "uniaxial_bending"
     BIAXIAL_BENDING = "biaxial_bending"
 
+
 class SeismicDesignCategory(Enum):
-    """Seismic Design Categories (SDC) - ACI 318M-25"""
     A = "A"
     B = "B"
     C = "C"
@@ -49,265 +39,213 @@ class SeismicDesignCategory(Enum):
     E = "E"
     F = "F"
 
+
 class FrameSystem(Enum):
-    """Seismic frame system types - ACI 318M-25"""
-    ORDINARY = "ordinary"          # Ordinary Moment Frame (OMF)
-    INTERMEDIATE = "intermediate"  # Intermediate Moment Frame (IMF)
-    SPECIAL = "special"            # Special Moment Frame (SMF)
+    ORDINARY = "ordinary"
+    INTERMEDIATE = "intermediate"
+    SPECIAL = "special"
+
 
 @dataclass
 class ColumnGeometry:
-    """Column geometry properties"""
-    width: float                            # Column width or diameter (mm)
-    depth: float                            # Column depth (mm) - equals width for circular
-    height: float                           # Center-to-center column height (mm)
-    clear_height: float                     # Clear height of the column lu (mm) - Critical for plastic hinge (lo)
-    cover: float                            # Concrete cover (mm)
-    shape: ColumnShape                      # Cross-sectional shape
-    column_type: ColumnType                 # Type of column
-    effective_length: float                 # Effective length for buckling (mm)
-    
-    # New Seismic Parameters
+    width: float
+    depth: float
+    height: float
+    clear_height: float
+    cover: float
+    shape: ColumnShape
+    column_type: ColumnType
+    effective_length: float
     sdc: SeismicDesignCategory = SeismicDesignCategory.A
     frame_system: FrameSystem = FrameSystem.ORDINARY
 
+
 @dataclass
 class ColumnLoads:
-    """Column load conditions"""
-    axial_force: float                      # Factored axial force Pu (kN) - compression positive
-    moment_x: float                         # Factored moment about x-axis Mux (kN⋅m)
-    moment_y: float                         # Factored moment about y-axis Muy (kN⋅m)
-    shear_x: float                          # Factored shear in x-direction Vux (kN)
-    shear_y: float                          # Factored shear in y-direction Vuy (kN)
+    axial_force: float
+    moment_x: float
+    moment_y: float
+    shear_x: float
+    shear_y: float
     load_condition: LoadCondition
-    
-    # New Optional Seismic Parameters for Capacity Design (SDC D, E, F)
-    sum_beam_mpr_top: Optional[float] = None  # Sum of probable flexural strengths of beams at top joint (kN⋅m)
-    sum_beam_mpr_bot: Optional[float] = None  # Sum of probable flexural strengths of beams at bot joint (kN⋅m)
+    sum_beam_mpr_top: Optional[float] = None
+    sum_beam_mpr_bot: Optional[float] = None
+    sum_beam_mnb_top: Optional[float] = None
+    sum_beam_mnb_bot: Optional[float] = None
 
-    # New Optional Seismic Parameters for Strong-Column/Weak-Beam Check (SDC D, E, F)
-    sum_beam_mnb_top: Optional[float] = None  # Sum of nominal flexural strengths of beams at top joint (kN⋅m)
-    sum_beam_mnb_bot: Optional[float] = None  # Sum of nominal flexural strengths of beams at bot joint (kN⋅m)
 
 @dataclass
 class ColumnReinforcement:
-    """Column reinforcement design"""
-    longitudinal_bars: List[str]    # Longitudinal bar sizes
-    longitudinal_area: float        # Total longitudinal steel area (mm²)
-    tie_bars: str                   # Tie bar size for tied columns
-    tie_spacing: float              # Tie spacing (mm)
+    longitudinal_bars: List[str]
+    longitudinal_area: float
+    tie_bars: str
+    tie_spacing: float
     tie_legs_x: int
     tie_legs_y: int
-    spiral_bar: str                 # Spiral bar size for spiral columns
-    spiral_pitch: float             # Spiral pitch (mm)
-    confinement_ratio: float        # Volumetric ratio of confinement steel
+    spiral_bar: str
+    spiral_pitch: float
+    confinement_ratio: float
+
 
 @dataclass
 class ColumnCapacity:
-    """Column capacity results"""
-    axial_capacity: float           # Nominal axial capacity Pn (kN)
-    moment_capacity_x: float        # Moment capacity about x-axis Mnx (kN⋅m)
-    moment_capacity_y: float        # Moment capacity about y-axis Mny (kN⋅m)
-    shear_capacity_x: float         # Design shear capacity φVnx (kN)
-    shear_capacity_y: float         # Design shear capacity φVny (kN)
-    interaction_ratio: float        # P-M interaction ratio
-    slenderness_effects: bool       # Whether slenderness effects considered
+    axial_capacity: float
+    moment_capacity_x: float
+    moment_capacity_y: float
+    shear_capacity_x: float
+    shear_capacity_y: float
+    interaction_ratio: float
+    slenderness_effects: bool
+
 
 @dataclass
 class ColumnAnalysisResult:
-    """Complete column analysis results"""
     capacity: ColumnCapacity
     reinforcement: ColumnReinforcement
-    utilization_ratio: float       # Governing (Max) Demand/Capacity ratio
-    shear_utilization_x: float     # Shear D/C ratio in X direction
-    shear_utilization_y: float     # Shear D/C ratio in Y direction
-    stability_index: float         # Stability index for sway analysis
-    design_notes: List[str]        # Design notes and warnings
+    utilization_ratio: float
+    shear_utilization_x: float
+    shear_utilization_y: float
+    stability_index: float
+    design_notes: List[str]
+
+
+@dataclass
+class JointBeamElement:
+    exists: bool
+    b: float
+    d: float
+    as_top: float
+    as_bot: float
+
+
+@dataclass
+class JointColumnElement:
+    exists: bool
+    b: float
+    h: float
+    as_total: float
+    pu: float
+
+
+@dataclass
+class DirectionalJointResult:
+    exists: bool
+    sum_mnb: float
+    sum_mnc: float
+    ratio_scwb: float
+    vj_u: float
+    phi_vj: float
+    ratio_vj: float
+    gamma: float
+
+
+@dataclass
+class JointAnalysisResult:
+    x_dir: DirectionalJointResult
+    y_dir: DirectionalJointResult
+    notes: List[str]
+
+
+@dataclass
+class QTORow:
+    name: str
+    size: str
+    qty: int
+    cut_length: float
+    order: str
+    weight: float
+
+
+@dataclass
+class QTOResult:
+    volume: float
+    formwork: float
+    total_weight: float
+    rows: List[QTORow]
+
 
 class ACI318M25ColumnDesign:
-    """
-    ACI 318M-25 Column Design Library
-    
-    Comprehensive column design according to ACI 318M-25:
-    - Axial and combined loading (Chapter 10)
-    - Slenderness effects (Chapter 6)
-    - Seismic provisions (Chapter 18)
-    - Confinement design
-    - P-M interaction analysis
-    """
-    
-    def __init__(self):
-        """Initialize column design calculator"""
-        self.aci = ACI318M25()
-        
-        # Strength reduction factors φ - ACI 318M-25 Section 21.2
-        self.phi_factors = {
-            'compression_tied': 0.65,
-            'compression_spiral': 0.75,
-            'flexure': 0.90,
-            'shear': 0.75
-        }
-        
-        # Minimum and maximum reinforcement ratios - ACI 318M-25 Section 10.6
-        self.reinforcement_limits = {
-            'min_ratio': 0.01,      # Minimum ρg = 0.01
-            'max_ratio': 0.08,      # Maximum ρg = 0.08 (0.06 for lap splices)
-            'min_bars': 4,          # Minimum number of longitudinal bars
-            'min_bar_size': 'D16'   # Minimum bar size
-        }
-        
-        # Tie and spiral requirements
-        self.confinement_requirements = {
-            'min_tie_size': 'D10',
-            'max_tie_spacing_factor': 16,  # 16 times longitudinal bar diameter
-            'min_spiral_ratio': 0.45,      # Minimum spiral reinforcement ratio factor
-            'spiral_clear_spacing': 25     # Minimum clear spacing between spiral turns (mm)
-        }
 
-    def generate_bar_layout(self, geometry: ColumnGeometry, 
-                            longitudinal_bars: List[str], 
-                            assumed_tie: str = 'D10') -> List[Tuple[float, float, float]]:
-        """
-        Generates precise (x, y) coordinates and areas for each longitudinal bar.
-        Returns a list of tuples: [(x, y, area), ...] relative to the geometric center.
-        """
-        if not longitudinal_bars:
-            return []
-            
+    def __init__(self):
+        self.aci = ACI318M25()
+        self.phi_factors = {'compression_tied': 0.65, 'compression_spiral': 0.75, 'flexure': 0.90, 'shear': 0.75}
+        self.reinforcement_limits = {'min_ratio': 0.01, 'max_ratio': 0.08, 'min_bars': 4, 'min_bar_size': 'D16'}
+
+    def generate_bar_layout(self, geometry: ColumnGeometry, longitudinal_bars: List[str], assumed_tie: str = 'D10') -> \
+    List[Tuple[float, float, float]]:
+        if not longitudinal_bars: return []
         N = len(longitudinal_bars)
         db = self.aci.get_bar_diameter(longitudinal_bars[0])
         area = self.aci.get_bar_area(longitudinal_bars[0])
         dt = self.aci.get_bar_diameter(assumed_tie)
         c = geometry.cover
-        
         layout = []
-        
+
         if geometry.shape == ColumnShape.CIRCULAR:
-            # Radius to the center of the longitudinal bars
             Rc = geometry.width / 2.0 - c - dt - db / 2.0
             for i in range(N):
                 theta = i * (2 * math.pi / N)
-                x = Rc * math.cos(theta)
-                y = Rc * math.sin(theta)
-                layout.append((x, y, area))
-                
+                layout.append((Rc * math.cos(theta), Rc * math.sin(theta), area))
         elif geometry.shape == ColumnShape.RECTANGULAR:
-            # Core boundaries for bar centers
             x_max = geometry.width / 2.0 - c - dt - db / 2.0
             y_max = geometry.depth / 2.0 - c - dt - db / 2.0
-            
-            # 1. Place 4 bars in the corners
-            layout.extend([
-                (x_max, y_max, area), (-x_max, y_max, area),
-                (-x_max, -y_max, area), (x_max, -y_max, area)
-            ])
-            
-            # 2. Distribute remaining bars (N - 4) proportionally to the faces
+            layout.extend([(x_max, y_max, area), (-x_max, y_max, area), (-x_max, -y_max, area), (x_max, -y_max, area)])
             if N > 4:
                 rem = N - 4
-                ratio = geometry.width / (geometry.width + geometry.depth)
-                # Ensure even numbers to maintain symmetry across axes
-                nx_inter = 2 * int(round(rem * ratio / 2.0)) 
+                ratio = geometry.width / (geometry.width + geometry.depth) if (
+                                                                                          geometry.width + geometry.depth) > 0 else 0.5
+                nx_inter = 2 * int(round(rem * ratio / 2.0))
                 ny_inter = rem - nx_inter
-                
-                nx_face = nx_inter // 2  # Bars per top/bottom face
-                ny_face = ny_inter // 2  # Bars per left/right face
-                
-                # Top/Bottom faces
+                nx_face, ny_face = nx_inter // 2, ny_inter // 2
+
                 if nx_face > 0:
                     spacing_x = (2 * x_max) / (nx_face + 1)
                     for i in range(1, nx_face + 1):
                         x = x_max - i * spacing_x
-                        layout.append((x, y_max, area))
-                        layout.append((x, -y_max, area))
-                        
-                # Left/Right faces
+                        layout.extend([(x, y_max, area), (x, -y_max, area)])
                 if ny_face > 0:
                     spacing_y = (2 * y_max) / (ny_face + 1)
                     for i in range(1, ny_face + 1):
                         y = y_max - i * spacing_y
-                        layout.append((x_max, y, area))
-                        layout.append((-x_max, y, area))
-                
+                        layout.extend([(x_max, y, area), (-x_max, y, area)])
         return layout
 
     def check_seismic_geometric_limits(self, geometry: ColumnGeometry) -> List[str]:
-        """
-        Check dimensional limits for Special Moment Frame (SMF) columns
-        ACI 318M-25 Section 18.7.2.1
-        """
         warnings = []
-        
-        # These limits only apply to Special Moment Frames
         if geometry.frame_system == FrameSystem.SPECIAL:
             min_dim = min(geometry.width, geometry.depth)
             max_dim = max(geometry.width, geometry.depth)
-            
-            # 1. Shortest cross-sectional dimension >= 300 mm
-            if min_dim < 300.0:
-                warnings.append(
-                    f"SMF Violation: Minimum column dimension ({min_dim:.0f} mm) must be >= 300 mm."
-                )
-                
-            # 2. Ratio of shortest to perpendicular dimension >= 0.4
-            if max_dim > 0:
-                aspect_ratio = min_dim / max_dim
-                if aspect_ratio < 0.4:
-                    warnings.append(
-                        f"SMF Violation: Cross-sectional aspect ratio ({aspect_ratio:.2f}) must be >= 0.4."
-                    )
-                    
+            if min_dim < 300.0: warnings.append(
+                f"SMF Violation: Minimum column dimension ({min_dim:.0f} mm) must be >= 300 mm.")
+            if max_dim > 0 and (min_dim / max_dim) < 0.4: warnings.append(
+                f"SMF Violation: Cross-sectional aspect ratio must be >= 0.4.")
         return warnings
-    
-    def calculate_probable_moment_capacity(self, geometry: ColumnGeometry,
-                                           material_props: MaterialProperties,
-                                           bar_layout: List[Tuple[float, float, float]],
-                                           axial_load: float) -> float:
-        """
-        Estimate probable flexural strength (Mpr) for SMF capacity design using 3D Strain-Compatibility.
-        ACI 318M-25 Section 18.7.6
-        Uses steel stress of 1.25fy and strength reduction factor phi = 1.0.
-        """
-        fc_prime = material_props.fc_prime
-        fy_pr = 1.25 * material_props.fy  # Probable yield strength (Longitudinal)
-        Es = 200000.0
-        ecu = 0.003
-        
+
+    def calculate_probable_moment_capacity(self, geometry: ColumnGeometry, material_props: MaterialProperties,
+                                           bar_layout: List[Tuple[float, float, float]], axial_load: float) -> float:
+        fc_prime, fy_pr = material_props.fc_prime, 1.25 * material_props.fy
+        Es, ecu = 200000.0, 0.003
         P_target = abs(axial_load)
-        
+
         if geometry.shape == ColumnShape.RECTANGULAR:
-            hx, hy = geometry.depth, geometry.width
-            h = max(hx, hy)
-            b = min(hx, hy)
-            is_x = (hx >= hy)
+            h, b = max(geometry.depth, geometry.width), min(geometry.depth, geometry.width)
+            is_x = (geometry.depth >= geometry.width)
         else:
             h = b = geometry.width
             is_x = True
 
-        if fc_prime <= 28:
-            beta1 = 0.85
-        elif fc_prime <= 55:
-            beta1 = 0.85 - 0.05 * (fc_prime - 28) / 7.0
-        else:
-            beta1 = 0.65
-
+        beta1 = 0.85 if fc_prime <= 28 else max(0.65, 0.85 - 0.05 * (fc_prime - 28) / 7.0)
         steel_area = sum(a for _, _, a in bar_layout)
-        Ag = geometry.width * geometry.depth if geometry.shape == ColumnShape.RECTANGULAR else math.pi * (geometry.width/2)**2
+        Ag = geometry.width * geometry.depth if geometry.shape == ColumnShape.RECTANGULAR else math.pi * (
+                    geometry.width / 2) ** 2
         Po = 0.85 * fc_prime * (Ag - steel_area) + fy_pr * steel_area
-        Pn_max = Po / 1000.0
+        if P_target > Po / 1000.0: return 0.001
 
-        if P_target > Pn_max:
-            return 0.001
-
-        curve_Pn = []
-        curve_Mn = []
+        curve_Pn, curve_Mn = [], []
         is_circular = geometry.shape == ColumnShape.CIRCULAR
-        c_values = [h * x for x in [10.0, 5.0, 2.0, 1.5, 1.2, 1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.05, 0.01]]
-        
-        for c in c_values:
-            Pn = 0.0
-            Mn = 0.0
-            
+        for c in [h * x for x in
+                  [10.0, 5.0, 2.0, 1.5, 1.2, 1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.05, 0.01]]:
+            Pn, Mn = 0.0, 0.0
             a = min(beta1 * c, h)
             if a > 0:
                 if not is_circular:
@@ -315,832 +253,537 @@ class ACI318M25ColumnDesign:
                     y_c = h / 2.0 - a / 2.0
                 else:
                     theta = 2 * math.acos(max(-1.0, min(1.0, 1.0 - 2 * a / h)))
-                    area_c = (h / 2.0)**2 / 2.0 * (theta - math.sin(theta))
+                    area_c = (h / 2.0) ** 2 / 2.0 * (theta - math.sin(theta))
                     Cc = (0.85 * fc_prime * area_c) / 1000.0
-                    y_c = (2 * (h / 2.0) * math.sin(theta/2)**3) / (3 * (theta - math.sin(theta))) if theta > 0 else 0
-                Pn += Cc
+                    y_c = (2 * (h / 2.0) * math.sin(theta / 2) ** 3) / (
+                                3 * (theta - math.sin(theta))) if theta > 0 else 0
+                Pn += Cc;
                 Mn += Cc * (y_c / 1000.0)
 
             for x_bar, y_bar, a_bar in bar_layout:
                 d_i = h / 2.0 - y_bar if is_x else h / 2.0 - x_bar
                 strain = ecu * (c - d_i) / c
                 stress = max(-fy_pr, min(fy_pr, strain * Es))
-                
-                if d_i < a:
-                    stress -= 0.85 * fc_prime
-                    
+                if d_i < a: stress -= 0.85 * fc_prime
                 Fs = a_bar * stress
-                Pn += Fs / 1000.0
+                Pn += Fs / 1000.0;
                 Mn += (Fs / 1000.0) * (h / 2.0 - d_i) / 1000.0
 
-            curve_Pn.append(Pn)
+            curve_Pn.append(Pn);
             curve_Mn.append(Mn)
 
         for i in range(len(curve_Pn) - 1):
-            p1, p2 = curve_Pn[i], curve_Pn[i+1]
-            m1, m2 = curve_Mn[i], curve_Mn[i+1]
+            p1, p2, m1, m2 = curve_Pn[i], curve_Pn[i + 1], curve_Mn[i], curve_Mn[i + 1]
             if min(p1, p2) <= P_target <= max(p1, p2):
-                if p1 == p2: return max(m1, m2)
-                return m1 + (m2 - m1) * (P_target - p1) / (p2 - p1)
-                
+                return max(m1, m2) if p1 == p2 else m1 + (m2 - m1) * (P_target - p1) / (p2 - p1)
         return 0.001
 
-
-    def calculate_nominal_moment_capacity(self, geometry: ColumnGeometry,
-                                          material_props: MaterialProperties,
-                                          bar_layout: List[Tuple[float, float, float]],
-                                          axial_load: float) -> float:
-        """
-        Estimate nominal flexural strength (Mnc) for Strong-Column/Weak-Beam check using 3D Strain-Compatibility.
-        """
-        fc_prime = material_props.fc_prime
-        fy = material_props.fy # Longitudinal
-        Es = 200000.0
-        ecu = 0.003
-        
+    def calculate_nominal_moment_capacity(self, geometry: ColumnGeometry, material_props: MaterialProperties,
+                                          bar_layout: List[Tuple[float, float, float]], axial_load: float,
+                                          bending_axis: str = 'x') -> float:
+        fc_prime, fy = material_props.fc_prime, material_props.fy
+        Es, ecu = 200000.0, 0.003
         P_target = abs(axial_load)
-        
-        if geometry.shape == ColumnShape.RECTANGULAR:
-            hx, hy = geometry.depth, geometry.width
-            h = max(hx, hy)
-            b = min(hx, hy)
-            is_x = (hx >= hy)
-        else:
-            h = b = geometry.width
-            is_x = True
 
-        if fc_prime <= 28:
-            beta1 = 0.85
-        elif fc_prime <= 55:
-            beta1 = 0.85 - 0.05 * (fc_prime - 28) / 7.0
+        hx, hy = geometry.width, geometry.depth
+        if bending_axis == 'x':
+            h, b = hy, hx
         else:
-            beta1 = 0.65
+            h, b = hx, hy
 
+        beta1 = 0.85 if fc_prime <= 28 else max(0.65, 0.85 - 0.05 * (fc_prime - 28) / 7.0)
         steel_area = sum(a for _, _, a in bar_layout)
-        Ag = geometry.width * geometry.depth if geometry.shape == ColumnShape.RECTANGULAR else math.pi * (geometry.width/2)**2
+        Ag = hx * hy
         Po = 0.85 * fc_prime * (Ag - steel_area) + fy * steel_area
-        Pn_max = Po / 1000.0
+        if P_target > Po / 1000.0: return 0.001
 
-        if P_target > Pn_max:
-            return 0.001
-
-        curve_Pn = []
-        curve_Mn = []
-        is_circular = geometry.shape == ColumnShape.CIRCULAR
-        c_values = [h * x for x in [10.0, 5.0, 2.0, 1.5, 1.2, 1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.05, 0.01]]
-        
-        for c in c_values:
-            Pn = 0.0
-            Mn = 0.0
-            
+        curve_Pn, curve_Mn = [], []
+        for c in [h * x for x in
+                  [10.0, 5.0, 2.0, 1.5, 1.2, 1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.05, 0.01]]:
+            Pn, Mn = 0.0, 0.0
             a = min(beta1 * c, h)
             if a > 0:
-                if not is_circular:
-                    Cc = (0.85 * fc_prime * a * b) / 1000.0
-                    y_c = h / 2.0 - a / 2.0
-                else:
-                    theta = 2 * math.acos(max(-1.0, min(1.0, 1.0 - 2 * a / h)))
-                    area_c = (h / 2.0)**2 / 2.0 * (theta - math.sin(theta))
-                    Cc = (0.85 * fc_prime * area_c) / 1000.0
-                    y_c = (2 * (h / 2.0) * math.sin(theta/2)**3) / (3 * (theta - math.sin(theta))) if theta > 0 else 0
-                Pn += Cc
-                Mn += Cc * (y_c / 1000.0)
+                Cc = (0.85 * fc_prime * a * b) / 1000.0
+                Pn += Cc;
+                Mn += Cc * ((h / 2.0 - a / 2.0) / 1000.0)
 
             for x_bar, y_bar, a_bar in bar_layout:
-                d_i = h / 2.0 - y_bar if is_x else h / 2.0 - x_bar
+                d_i = h / 2.0 - y_bar if bending_axis == 'x' else h / 2.0 - x_bar
                 strain = ecu * (c - d_i) / c
                 stress = max(-fy, min(fy, strain * Es))
-                
-                if d_i < a:
-                    stress -= 0.85 * fc_prime
-                    
+                if d_i < a: stress -= 0.85 * fc_prime
                 Fs = a_bar * stress
-                Pn += Fs / 1000.0
+                Pn += Fs / 1000.0;
                 Mn += (Fs / 1000.0) * (h / 2.0 - d_i) / 1000.0
 
-            curve_Pn.append(Pn)
+            curve_Pn.append(Pn);
             curve_Mn.append(Mn)
 
         for i in range(len(curve_Pn) - 1):
-            p1, p2 = curve_Pn[i], curve_Pn[i+1]
-            m1, m2 = curve_Mn[i], curve_Mn[i+1]
+            p1, p2, m1, m2 = curve_Pn[i], curve_Pn[i + 1], curve_Mn[i], curve_Mn[i + 1]
             if min(p1, p2) <= P_target <= max(p1, p2):
-                if p1 == p2: return max(m1, m2)
-                return m1 + (m2 - m1) * (P_target - p1) / (p2 - p1)
-                
+                return max(m1, m2) if p1 == p2 else m1 + (m2 - m1) * (P_target - p1) / (p2 - p1)
         return 0.001
-    
-    def calculate_required_longitudinal_steel(self, loads: ColumnLoads, 
-                                            geometry: ColumnGeometry,
-                                            material_props: MaterialProperties) -> float:
-        """
-        Calculate an initial baseline guess for required longitudinal steel area
-        """
-        if geometry.shape == ColumnShape.RECTANGULAR:
-            Ag = geometry.width * geometry.depth
-        else:
-            Ag = math.pi * (geometry.width / 2) ** 2
-        
-        As_min = self.reinforcement_limits['min_ratio'] * Ag
-        As_required = As_min
-        
-        if loads.load_condition != LoadCondition.AXIAL_ONLY:
-            moment_ratio = abs(loads.moment_x * 1000) / (loads.axial_force * geometry.width / 6) if loads.axial_force > 0 else 2.0
-            if moment_ratio > 1.0:
-                As_additional = self._calculate_additional_steel_for_moment(
-                    loads, geometry, material_props
-                )
-                As_required = max(As_required, As_additional)
-        
-        if geometry.frame_system == FrameSystem.SPECIAL:
-            max_ratio = 0.06
-        else:
-            max_ratio = self.reinforcement_limits['max_ratio']
-            
-        As_max = max_ratio * Ag
-        As_required = min(As_required, As_max)
-        
-        return As_required
-    
-    def design_tie_reinforcement(self, geometry: ColumnGeometry, 
-                               longitudinal_bars: List[str],
-                               loads: ColumnLoads,
-                               material_props: MaterialProperties) -> Tuple[str, float, int, int]:
-        """
-        Design tie reinforcement for tied columns checking confinement, seismic rules, and shear
-        """
-        if longitudinal_bars:
-            long_bar_size = longitudinal_bars[0]
-            long_bar_diameter = self.aci.get_bar_diameter(long_bar_size)
-        else:
-            long_bar_diameter = 20.0
-            
-        tie_size = 'D10' if long_bar_diameter <= 32.0 else 'D12'
-        tie_diameter = self.aci.get_bar_diameter(tie_size)
-        
-        tie_legs_x = 2
-        tie_legs_y = 2
-        
-        if geometry.shape == ColumnShape.RECTANGULAR and len(longitudinal_bars) >= 4:
-            num_bars = len(longitudinal_bars)
-            nx = max(2, int(round((geometry.width / (geometry.width + geometry.depth)) * (num_bars / 2.0))) + 1)
-            ny = max(2, int((num_bars + 4 - 2 * nx) / 2))
-            
-            if nx > 1:
-                clear_x = (geometry.width - 2 * geometry.cover - 2 * tie_diameter - long_bar_diameter) / (nx - 1) - long_bar_diameter
-                tie_legs_y = nx if clear_x > 150.0 else math.ceil(nx / 2.0) + (1 if nx % 2 == 0 else 0)
-            if ny > 1:
-                clear_y = (geometry.depth - 2 * geometry.cover - 2 * tie_diameter - long_bar_diameter) / (ny - 1) - long_bar_diameter
-                tie_legs_x = ny if clear_y > 150.0 else math.ceil(ny / 2.0) + (1 if ny % 2 == 0 else 0)
 
-        # SEISMIC CONFINEMENT (SMF)
+    def calculate_required_longitudinal_steel(self, loads: ColumnLoads, geometry: ColumnGeometry,
+                                              material_props: MaterialProperties) -> float:
+        Ag = geometry.width * geometry.depth if geometry.shape == ColumnShape.RECTANGULAR else math.pi * (
+                    geometry.width / 2) ** 2
+        As_required = self.reinforcement_limits['min_ratio'] * Ag
+        if loads.load_condition != LoadCondition.AXIAL_ONLY:
+            moment_ratio = abs(loads.moment_x * 1000) / (
+                        loads.axial_force * geometry.width / 6) if loads.axial_force > 0 else 2.0
+            if moment_ratio > 1.0:
+                lever_arm = 0.8 * geometry.depth if geometry.shape == ColumnShape.RECTANGULAR else 0.6 * geometry.width
+                As_moment = max(abs(loads.moment_x), abs(loads.moment_y)) * 1e6 / (material_props.fy * lever_arm)
+                As_required = max(As_required, As_moment)
+        As_max = (0.06 if geometry.frame_system == FrameSystem.SPECIAL else self.reinforcement_limits['max_ratio']) * Ag
+        return min(As_required, As_max)
+
+    def design_tie_reinforcement(self, geometry: ColumnGeometry, longitudinal_bars: List[str], loads: ColumnLoads,
+                                 material_props: MaterialProperties, pref_tie: str = 'D10') -> Tuple[
+        str, float, int, int]:
+        if not longitudinal_bars: return pref_tie, 50.0, 2, 2
+
+        long_bar_diameter = self.aci.get_bar_diameter(longitudinal_bars[0])
+        tie_size = pref_tie
+        tie_diameter = self.aci.get_bar_diameter(tie_size)
+
+        num_bars = len(longitudinal_bars)
+        rem = num_bars - 4
+        ratio = geometry.width / (geometry.width + geometry.depth) if (geometry.width + geometry.depth) > 0 else 0.5
+        nx_inter = 2 * int(round(rem * ratio / 2.0))
+        ny_inter = rem - nx_inter
+
+        nx = (nx_inter // 2) + 2
+        ny = (ny_inter // 2) + 2
+
+        tie_legs_y = 2
+        if nx > 2:
+            clear_x = (geometry.width - 2 * geometry.cover - 2 * tie_diameter - long_bar_diameter) / (
+                        nx - 1) - long_bar_diameter
+            tie_legs_y = nx if clear_x > 150.0 else math.ceil(nx / 2.0) + (1 if nx % 2 == 0 else 0)
+
+        tie_legs_x = 2
+        if ny > 2:
+            clear_y = (geometry.depth - 2 * geometry.cover - 2 * tie_diameter - long_bar_diameter) / (
+                        ny - 1) - long_bar_diameter
+            tie_legs_x = ny if clear_y > 150.0 else math.ceil(ny / 2.0) + (1 if ny % 2 == 0 else 0)
+
+        tie_legs_x = min(tie_legs_x, ny)
+        tie_legs_y = min(tie_legs_y, nx)
+
         if geometry.frame_system == FrameSystem.SPECIAL:
             min_col_dim = min(geometry.width, geometry.depth)
-            
             hx_approx = min_col_dim / min(tie_legs_x, tie_legs_y)
-            sx = 100.0 + (350.0 - hx_approx) / 3.0
-            sx = max(100.0, min(sx, 150.0))
-            
-            spacing_confinement = min(
-                min_col_dim / 4.0,
-                6.0 * long_bar_diameter,
-                sx
-            )
-            
-            fc_prime = material_props.fc_prime
-            fyt = material_props.fyt # Uses Transverse Yield Strength
-            Ag = geometry.width * geometry.depth
-            
+            sx = max(100.0, min(100.0 + (350.0 - hx_approx) / 3.0, 150.0))
+            s_max_geom = min(min_col_dim / 4.0, 6.0 * long_bar_diameter, sx)
+
+            fc_prime, fyt = material_props.fc_prime, material_props.fyt
             bc_x = geometry.depth - 2 * geometry.cover
             bc_y = geometry.width - 2 * geometry.cover
             Ach = bc_x * bc_y
-            
-            Ash_req_x1 = 0.3 * (spacing_confinement * bc_x * fc_prime / fyt) * (Ag / Ach - 1.0)
-            Ash_req_x2 = 0.09 * spacing_confinement * bc_x * fc_prime / fyt
-            Ash_req_x = max(Ash_req_x1, Ash_req_x2)
-            
-            Ash_req_y1 = 0.3 * (spacing_confinement * bc_y * fc_prime / fyt) * (Ag / Ach - 1.0)
-            Ash_req_y2 = 0.09 * spacing_confinement * bc_y * fc_prime / fyt
-            Ash_req_y = max(Ash_req_y1, Ash_req_y2)
-            
-            A_tie = self.aci.get_bar_area(tie_size)
-            while (tie_legs_x * A_tie < Ash_req_x) or (tie_legs_y * A_tie < Ash_req_y):
-                if tie_size == 'D10':
-                    tie_size = 'D12'
-                elif tie_size == 'D12':
-                    tie_size = 'D16'
-                else:
-                    tie_legs_x += 1
-                    tie_legs_y += 1
+            Ag = geometry.width * geometry.depth
+
+            ash_s_req_x = max(0.3 * (bc_x * fc_prime / fyt) * (Ag / Ach - 1.0), 0.09 * bc_x * fc_prime / fyt)
+            ash_s_req_y = max(0.3 * (bc_y * fc_prime / fyt) * (Ag / Ach - 1.0), 0.09 * bc_y * fc_prime / fyt)
+
+            found = False
+            for t_size in ['D10', 'D12', 'D16']:
+                if self.aci.get_bar_area(t_size) < self.aci.get_bar_area(pref_tie): continue
+                A_tie = self.aci.get_bar_area(t_size)
+
+                for lx in range(tie_legs_x, ny + 1):
+                    for ly in range(tie_legs_y, nx + 1):
+                        s_req_x = (lx * A_tie) / ash_s_req_x if ash_s_req_x > 0 else float('inf')
+                        s_req_y = (ly * A_tie) / ash_s_req_y if ash_s_req_y > 0 else float('inf')
+
+                        s_allowed = min(s_max_geom, s_req_x, s_req_y)
+                        if s_allowed >= 75.0:
+                            tie_size = t_size
+                            tie_legs_x = lx
+                            tie_legs_y = ly
+                            spacing_confinement = s_allowed
+                            found = True
+                            break
+                    if found: break
+                if found: break
+
+            if not found:
+                tie_size = 'D16'
+                tie_legs_x = ny
+                tie_legs_y = nx
                 A_tie = self.aci.get_bar_area(tie_size)
-
+                s_req_x = (tie_legs_x * A_tie) / ash_s_req_x if ash_s_req_x > 0 else float('inf')
+                s_req_y = (tie_legs_y * A_tie) / ash_s_req_y if ash_s_req_y > 0 else float('inf')
+                spacing_confinement = min(s_max_geom, s_req_x, s_req_y)
         else:
-            spacing_confinement = min(
-                16 * long_bar_diameter,
-                48 * tie_diameter,
-                min(geometry.width, geometry.depth)
-            )
+            spacing_confinement = min(16 * long_bar_diameter, 48 * tie_diameter, min(geometry.width, geometry.depth))
 
-        # SHEAR REQUIREMENTS
-        fc_prime = material_props.fc_prime
-        fy_tie = material_props.fyt # Uses Transverse Yield Strength
         phi_v = self.phi_factors['shear']
-        A_tie_leg = self.aci.get_bar_area(tie_size)
-        
         dx = geometry.width - geometry.cover - tie_diameter - (long_bar_diameter / 2)
         dy = geometry.depth - geometry.cover - tie_diameter - (long_bar_diameter / 2)
-        
-        # Shear in X direction
-        Vu_x = abs(loads.shear_x) * 1000
-        Av_x = tie_legs_x * A_tie_leg
-        
-        Vc_x = 0.17 * math.sqrt(fc_prime) * geometry.depth * dx
-        Vs_req_x = max(0.0, (Vu_x / phi_v) - Vc_x)
-        
-        s_shear_x = float('inf')
-        if Vs_req_x > 0:
-            s_shear_x = (Av_x * fy_tie * dx) / Vs_req_x
-            
-        Vs_max_x = 0.33 * math.sqrt(fc_prime) * geometry.depth * dx
-        max_s_shear_x = dx / 4.0 if Vs_req_x > Vs_max_x else dx / 2.0
 
-        # Shear in Y direction
-        Vu_y = abs(loads.shear_y) * 1000
-        Av_y = tie_legs_y * A_tie_leg
-        
-        Vc_y = 0.17 * math.sqrt(fc_prime) * geometry.width * dy
-        Vs_req_y = max(0.0, (Vu_y / phi_v) - Vc_y)
-        
-        s_shear_y = float('inf')
-        if Vs_req_y > 0:
-            s_shear_y = (Av_y * fy_tie * dy) / Vs_req_y
-            
-        Vs_max_y = 0.33 * math.sqrt(fc_prime) * geometry.width * dy
-        max_s_shear_y = dy / 4.0 if Vs_req_y > Vs_max_y else dy / 2.0
+        Vc_x = 0.17 * math.sqrt(material_props.fc_prime) * geometry.depth * dx
+        Vs_req_x = max(0.0, (abs(loads.shear_x) * 1000 / phi_v) - Vc_x)
+        s_shear_x = (tie_legs_x * self.aci.get_bar_area(
+            tie_size) * material_props.fyt * dx) / Vs_req_x if Vs_req_x > 0 else float('inf')
+        max_s_shear_x = dx / 4.0 if Vs_req_x > 0.33 * math.sqrt(
+            material_props.fc_prime) * geometry.depth * dx else dx / 2.0
 
-        # GOVERNING SPACING
-        s_final = min(spacing_confinement, s_shear_x, s_shear_y, max_s_shear_x, max_s_shear_y)
-        s_final = math.floor(s_final / 10.0) * 10.0
-        s_final = max(s_final, 50.0)
-        
+        Vc_y = 0.17 * math.sqrt(material_props.fc_prime) * geometry.width * dy
+        Vs_req_y = max(0.0, (abs(loads.shear_y) * 1000 / phi_v) - Vc_y)
+        s_shear_y = (tie_legs_y * self.aci.get_bar_area(
+            tie_size) * material_props.fyt * dy) / Vs_req_y if Vs_req_y > 0 else float('inf')
+        max_s_shear_y = dy / 4.0 if Vs_req_y > 0.33 * math.sqrt(
+            material_props.fc_prime) * geometry.width * dy else dy / 2.0
+
+        s_final = max(50.0, math.floor(
+            min(spacing_confinement, s_shear_x, s_shear_y, max_s_shear_x, max_s_shear_y) / 10.0) * 10.0)
         return tie_size, s_final, tie_legs_x, tie_legs_y
-    
-    def design_spiral_reinforcement(self, geometry: ColumnGeometry,
-                                  material_props: MaterialProperties) -> Tuple[str, float, float]:
-        """
-        Design spiral reinforcement for spiral columns
-        ACI 318M-25 Section 25.7.3
-        """
-        if geometry.shape != ColumnShape.CIRCULAR:
-            raise ValueError("Spiral reinforcement only applicable to circular columns")
-        
-        fc_prime = material_props.fc_prime
-        fyt = material_props.fyt # Uses Transverse Yield Strength
-        
-        dc = geometry.width - 2 * geometry.cover
-        Ac = math.pi * (dc / 2) ** 2 
-        Ag = math.pi * (geometry.width / 2) ** 2
-        
-        rho_s = 0.45 * (Ag / Ac - 1.0) * (fc_prime / fyt)
-        
-        rho_s_min = self.confinement_requirements['min_spiral_ratio'] * (fc_prime / fyt)
-        rho_s = max(rho_s, rho_s_min)
-        
-        spiral_bar = 'D10'
-        As_spiral = self.aci.get_bar_area(spiral_bar)
-        
-        s_required = 4 * As_spiral / (dc * rho_s)
-        
-        min_clear_spacing = self.confinement_requirements['spiral_clear_spacing']
-        spiral_diameter = self.aci.get_bar_diameter(spiral_bar)
-        s_min = min_clear_spacing + spiral_diameter
-        
-        if s_required < s_min:
-            spiral_bar = 'D12'
-            As_spiral = self.aci.get_bar_area(spiral_bar)
-            s_required = 4 * As_spiral / (dc * rho_s)
-            spiral_diameter = self.aci.get_bar_diameter(spiral_bar)
-            s_min = min_clear_spacing + spiral_diameter
-        
-        spiral_pitch = max(s_required, s_min)
-        s_max = 75.0 + spiral_diameter
-        spiral_pitch = min(spiral_pitch, s_max)
-        
-        return spiral_bar, spiral_pitch, rho_s
-    
-    def calculate_axial_capacity(self, geometry: ColumnGeometry,
-                               material_props: MaterialProperties,
-                               steel_area: float) -> float:
-        """
-        Calculate maximum allowable nominal axial capacity (Pn,max)
-        """
-        fc_prime = material_props.fc_prime
-        fy = material_props.fy # Longitudinal
-        
-        if geometry.shape == ColumnShape.RECTANGULAR:
-            Ag = geometry.width * geometry.depth
-        elif geometry.shape == ColumnShape.CIRCULAR:
-            Ag = math.pi * (geometry.width / 2) ** 2
-        else:
-            Ag = geometry.width * geometry.depth
-        
-        Po = 0.85 * fc_prime * (Ag - steel_area) + fy * steel_area
-        
-        if geometry.column_type == ColumnType.TIED:
-            Pn_max = 0.80 * Po
-        else:
-            Pn_max = 0.85 * Po
-        
-        return Pn_max / 1000
-    
-    def check_slenderness_effects(self, geometry: ColumnGeometry,
-                                loads: ColumnLoads) -> Tuple[bool, float]:
-        """
-        Check if slenderness effects need to be considered
-        """
-        k = 1.0 
-        
-        if geometry.shape == ColumnShape.RECTANGULAR:
-            r = geometry.depth / (2 * math.sqrt(3))
-        elif geometry.shape == ColumnShape.CIRCULAR:
-            r = geometry.width / 4 
-        else:
-            r = min(geometry.width, geometry.depth) / (2 * math.sqrt(3))
-        
-        kl_r = k * geometry.effective_length / r
-        
+
+    def calculate_axial_capacity(self, geometry: ColumnGeometry, material_props: MaterialProperties,
+                                 steel_area: float) -> float:
+        Ag = geometry.width * geometry.depth if geometry.shape == ColumnShape.RECTANGULAR else math.pi * (
+                    geometry.width / 2) ** 2
+        Po = 0.85 * material_props.fc_prime * (Ag - steel_area) + material_props.fy * steel_area
+        return (0.80 * Po if geometry.column_type == ColumnType.TIED else 0.85 * Po) / 1000
+
+    def check_slenderness_effects(self, geometry: ColumnGeometry, loads: ColumnLoads) -> Tuple[bool, float]:
+        r = geometry.depth / (2 * math.sqrt(3)) if geometry.shape == ColumnShape.RECTANGULAR else geometry.width / 4
+        kl_r = 1.0 * geometry.effective_length / r
+
         if loads.load_condition == LoadCondition.AXIAL_ONLY:
             limit = 22.0
         else:
-            M1 = min(abs(loads.moment_x), abs(loads.moment_y))
-            M2 = max(abs(loads.moment_x), abs(loads.moment_y))
-            M1_M2 = M1 / M2 if M2 > 0 else 0.0
-            
-            limit_calc = 34.0 - 12.0 * M1_M2
-            limit = max(22.0, min(limit_calc, 40.0))
-        
-        slenderness_required = kl_r > limit
-        
-        if slenderness_required:
-            magnification_factor = 1.0 + 0.1 * (kl_r - limit) / limit
-        else:
-            magnification_factor = 1.0
-        
-        return slenderness_required, magnification_factor
-    
-    def calculate_pm_interaction(self, geometry: ColumnGeometry,
-                               material_props: MaterialProperties,
-                               bar_layout: List[Tuple[float, float, float]],
-                               loads: ColumnLoads) -> float:
-        """
-        Calculate P-M interaction ratio using rigorous 3D Bar-by-Bar Strain-Compatibility.
-        """
-        fc_prime = material_props.fc_prime
-        fy = material_props.fy # Longitudinal
-        Es = 200000.0  
-        ecu = 0.003   
-        
-        Pu = abs(loads.axial_force)
-        Mux = abs(loads.moment_x)
-        Muy = abs(loads.moment_y)
-        
-        if geometry.shape == ColumnShape.RECTANGULAR:
-            Ag = geometry.width * geometry.depth
-            hx, hy = geometry.depth, geometry.width
-        else:
-            Ag = math.pi * (geometry.width / 2) ** 2
-            hx = hy = geometry.width
+            M1_M2 = min(abs(loads.moment_x), abs(loads.moment_y)) / max(abs(loads.moment_x),
+                                                                        abs(loads.moment_y)) if max(abs(loads.moment_x),
+                                                                                                    abs(loads.moment_y)) > 0 else 0.0
+            limit = max(22.0, min(34.0 - 12.0 * M1_M2, 40.0))
 
-        if fc_prime <= 28:
-            beta1 = 0.85
-        elif fc_prime <= 55:
-            beta1 = 0.85 - 0.05 * (fc_prime - 28) / 7.0
-        else:
-            beta1 = 0.65
-            
-        phi_c = self.phi_factors['compression_tied'] if geometry.column_type == ColumnType.TIED else self.phi_factors['compression_spiral']
-        phi_f = self.phi_factors['flexure']
-        
-        steel_area = sum(area for _, _, area in bar_layout)
-        Pn_max = self.calculate_axial_capacity(geometry, material_props, steel_area)
-        
+        return kl_r > limit, 1.0 + 0.1 * (kl_r - limit) / limit if kl_r > limit else 1.0
+
+    def calculate_pm_interaction(self, geometry: ColumnGeometry, material_props: MaterialProperties,
+                                 bar_layout: List[Tuple[float, float, float]], loads: ColumnLoads) -> float:
+        fc_prime, fy = material_props.fc_prime, material_props.fy
+        Es, ecu = 200000.0, 0.003
+        Pu, Mux, Muy = abs(loads.axial_force), abs(loads.moment_x), abs(loads.moment_y)
+
+        hx, hy = geometry.depth, geometry.width
+        beta1 = 0.85 if fc_prime <= 28 else max(0.65, 0.85 - 0.05 * (fc_prime - 28) / 7.0)
+        phi_c, phi_f = self.phi_factors['compression_tied'], self.phi_factors['flexure']
+
+        Pn_max = self.calculate_axial_capacity(geometry, material_props, sum(a for _, _, a in bar_layout))
         axial_ratio = Pu / (phi_c * Pn_max) if Pn_max > 0 else float('inf')
-        if axial_ratio >= 1.0 or (Mux < 0.01 and Muy < 0.01):
-            return axial_ratio
+        if axial_ratio >= 1.0 or (Mux < 0.01 and Muy < 0.01): return axial_ratio
 
-        def compute_capacity_at_axis(h, b, is_circular, is_x_axis):
-            curve_Pn = []
-            curve_phi_Mn = []
-            
-            c_values = [h * x for x in [10.0, 5.0, 2.0, 1.5, 1.2, 1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.05, 0.01]]
-            
-            for c in c_values:
-                Pn = 0.0
-                Mn = 0.0
-                
+        def compute_capacity_at_axis(h, b, is_x_axis):
+            curve_Pn, curve_phi_Mn = [], []
+            for c in [h * x for x in
+                      [10.0, 5.0, 2.0, 1.5, 1.2, 1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.05, 0.01]]:
+                Pn, Mn = 0.0, 0.0
                 a = min(beta1 * c, h)
                 if a > 0:
-                    if not is_circular:
-                        Cc = (0.85 * fc_prime * a * b) / 1000.0  
-                        y_c = h / 2.0 - a / 2.0
-                    else:
-                        theta = 2 * math.acos(max(-1.0, min(1.0, 1.0 - 2 * a / h)))
-                        area_c = (h / 2.0)**2 / 2.0 * (theta - math.sin(theta))
-                        Cc = (0.85 * fc_prime * area_c) / 1000.0  
-                        y_c = (2 * (h / 2.0) * math.sin(theta/2)**3) / (3 * (theta - math.sin(theta))) if theta > 0 else 0
-                    
-                    Pn += Cc
-                    Mn += Cc * (y_c / 1000.0) 
+                    Cc = (0.85 * fc_prime * a * b) / 1000.0
+                    Pn += Cc;
+                    Mn += Cc * ((h / 2.0 - a / 2.0) / 1000.0)
 
-                extreme_tension_strain = 0.0
-                max_di = 0.0
-                
+                max_di, et = 0.0, 0.0
                 for x_bar, y_bar, a_bar in bar_layout:
-                    if is_x_axis:
-                        d_i = h / 2.0 - y_bar  
-                    else:
-                        d_i = h / 2.0 - x_bar 
-                        
+                    d_i = h / 2.0 - y_bar if is_x_axis else h / 2.0 - x_bar
                     strain = ecu * (c - d_i) / c
                     stress = max(-fy, min(fy, strain * Es))
-                    
-                    if d_i < a:
-                        stress -= 0.85 * fc_prime
-                        
+                    if d_i < a: stress -= 0.85 * fc_prime
                     Fs = a_bar * stress
-                    Pn += Fs / 1000.0 
-                    Mn += (Fs / 1000.0) * (h / 2.0 - d_i) / 1000.0 
-                    
-                    if d_i > max_di:
-                        max_di = d_i
-                        extreme_tension_strain = strain
+                    Pn += Fs / 1000.0;
+                    Mn += (Fs / 1000.0) * (h / 2.0 - d_i) / 1000.0
+                    if d_i > max_di: max_di, et = d_i, abs(strain)
 
-                et = abs(extreme_tension_strain)
                 ey = fy / Es
-                if et <= ey:
-                    phi = phi_c
-                elif et >= 0.005:
-                    phi = phi_f
-                else:
-                    phi = phi_c + (phi_f - phi_c) * (et - ey) / (0.005 - ey)
-
-                Pn = min(Pn, Pn_max)
-                curve_Pn.append(Pn * phi)
+                phi = phi_c if et <= ey else (
+                    phi_f if et >= 0.005 else phi_c + (phi_f - phi_c) * (et - ey) / (0.005 - ey))
+                curve_Pn.append(min(Pn, Pn_max) * phi);
                 curve_phi_Mn.append(Mn * phi)
-                
             return curve_Pn, curve_phi_Mn
 
-        is_circ = geometry.shape == ColumnShape.CIRCULAR
-        Pn_curve_x, phi_Mnx_curve = compute_capacity_at_axis(hx, hy, is_circ, is_x_axis=True)
-        Pn_curve_y, phi_Mny_curve = compute_capacity_at_axis(hy, hx, is_circ, is_x_axis=False)
+        Pn_curve_x, phi_Mnx_curve = compute_capacity_at_axis(hx, hy, True)
+        Pn_curve_y, phi_Mny_curve = compute_capacity_at_axis(hy, hx, False)
 
         def get_moment_at_Pu(P_target, P_curve, M_curve):
             for i in range(len(P_curve) - 1):
-                p1, p2 = P_curve[i], P_curve[i+1]
-                m1, m2 = M_curve[i], M_curve[i+1]
-                if min(p1, p2) <= P_target <= max(p1, p2):
-                    if p1 == p2:
-                        return max(m1, m2)
-                    return m1 + (m2 - m1) * (P_target - p1) / (p2 - p1)
+                if min(P_curve[i], P_curve[i + 1]) <= P_target <= max(P_curve[i], P_curve[i + 1]):
+                    return max(M_curve[i], M_curve[i + 1]) if P_curve[i] == P_curve[i + 1] else M_curve[i] + (
+                                M_curve[i + 1] - M_curve[i]) * (P_target - P_curve[i]) / (P_curve[i + 1] - P_curve[i])
             return 0.001
 
-        phi_Mnx = get_moment_at_Pu(Pu, Pn_curve_x, phi_Mnx_curve)
-        phi_Mny = get_moment_at_Pu(Pu, Pn_curve_y, phi_Mny_curve)
-        
+        phi_Mnx, phi_Mny = get_moment_at_Pu(Pu, Pn_curve_x, phi_Mnx_curve), get_moment_at_Pu(Pu, Pn_curve_y,
+                                                                                             phi_Mny_curve)
         alpha = 1.15 if geometry.shape == ColumnShape.RECTANGULAR else 1.5
-        ratio_x = (Mux / phi_Mnx) if phi_Mnx > 0 else 0
-        ratio_y = (Muy / phi_Mny) if phi_Mny > 0 else 0
-        
-        interaction_ratio = (ratio_x**alpha + ratio_y**alpha)**(1.0/alpha)
-        
-        return max(interaction_ratio, axial_ratio)
-    
-    def _calculate_additional_steel_for_moment(self, loads: ColumnLoads,
-                                             geometry: ColumnGeometry,
-                                             material_props: MaterialProperties) -> float:
-        """Calculate additional steel needed for moment resistance"""
-        fy = material_props.fy # Longitudinal
-        
-        if geometry.shape == ColumnShape.RECTANGULAR:
-            lever_arm = 0.8 * geometry.depth
-            As_moment = abs(loads.moment_x) * 1e6 / (fy * lever_arm)
-        else:
-            lever_arm = 0.6 * geometry.width
-            As_moment = max(abs(loads.moment_x), abs(loads.moment_y)) * 1e6 / (fy * lever_arm)
-        
-        return As_moment
-    
-    def select_longitudinal_reinforcement(self, As_required: float, geometry: ColumnGeometry, 
-                                          aggregate_size: float = 25.0, assumed_tie: str = 'D10') -> List[str]:
-        """
-        Select longitudinal reinforcement bars ensuring ACI 318M-25 spacing limits.
-        """
-        bar_data = [
-            ('D16', 201.06), ('D20', 314.16), ('D25', 490.87), 
-            ('D28', 615.75), ('D32', 804.25), ('D36', 1017.88),
-            ('D40', 1256.64), ('D50', 1963.50)
-        ]
-        
-        min_bars = 4 if geometry.shape == ColumnShape.RECTANGULAR else 6
-        
-        d_tie = self.aci.get_bar_diameter(assumed_tie)
-        cover = geometry.cover
-        
-        selected_bars = []
-        
-        for bar_size, area in bar_data:
-            num_bars = max(min_bars, math.ceil(As_required / area))
-            
-            if geometry.shape == ColumnShape.RECTANGULAR and num_bars % 2 != 0:
-                num_bars += 1
-                
-            db = self.aci.get_bar_diameter(bar_size)
-            
-            min_clear_spacing = max(40.0, 1.5 * db, (4.0/3.0) * aggregate_size)
-            
-            if geometry.shape == ColumnShape.CIRCULAR:
-                d_core = geometry.width - 2 * cover - 2 * d_tie - db
-                perimeter = math.pi * d_core
-            else:
-                w_core = geometry.width - 2 * cover - 2 * d_tie - db
-                d_core = geometry.depth - 2 * cover - 2 * d_tie - db
-                perimeter = 2 * (w_core + d_core)
-            
-            avg_clear_spacing = (perimeter - (num_bars * db)) / num_bars
-            
-            if avg_clear_spacing >= min_clear_spacing:
-                selected_bars = [bar_size] * num_bars
-                break
-        
-        if not selected_bars:
-            largest_bar, largest_area = bar_data[-1]
-            num_bars = max(min_bars, math.ceil(As_required / largest_area))
-            if geometry.shape == ColumnShape.RECTANGULAR and num_bars % 2 != 0:
-                num_bars += 1
-            selected_bars = [largest_bar] * num_bars
-            
-        return selected_bars
-    
-    def calculate_shear_capacity(self, geometry: ColumnGeometry, 
-                                 material_props: MaterialProperties,
-                                 transverse_bar: str, spacing: float,
-                                 legs_x: int, legs_y: int,
+        ratio_x, ratio_y = (Mux / phi_Mnx) if phi_Mnx > 0 else 0, (Muy / phi_Mny) if phi_Mny > 0 else 0
+        return max((ratio_x ** alpha + ratio_y ** alpha) ** (1.0 / alpha), axial_ratio)
+
+    def calculate_shear_capacity(self, geometry: ColumnGeometry, material_props: MaterialProperties,
+                                 transverse_bar: str, spacing: float, legs_x: int, legs_y: int,
                                  longitudinal_bars: List[str]) -> Tuple[float, float]:
-        """
-        Calculate design shear capacities (φVnx, φVny)
-        """
-        if not transverse_bar or spacing <= 0:
-            return 0.0, 0.0
-            
-        fc_prime = material_props.fc_prime
-        fy_tie = material_props.fyt # Uses Transverse Yield Strength
-        phi_v = self.phi_factors['shear']
-        
-        transverse_area = self.aci.get_bar_area(transverse_bar)
+        if not transverse_bar or spacing <= 0: return 0.0, 0.0
         tie_diameter = self.aci.get_bar_diameter(transverse_bar)
-        
-        if longitudinal_bars:
-            long_bar_diameter = self.aci.get_bar_diameter(longitudinal_bars[0])
-        else:
-            long_bar_diameter = 20.0 
-            
+        long_bar_diameter = self.aci.get_bar_diameter(longitudinal_bars[0]) if longitudinal_bars else 20.0
         dx = geometry.width - geometry.cover - tie_diameter - (long_bar_diameter / 2)
         dy = geometry.depth - geometry.cover - tie_diameter - (long_bar_diameter / 2)
-        
-        Vc_x = 0.17 * math.sqrt(fc_prime) * geometry.depth * dx
-        Vc_y = 0.17 * math.sqrt(fc_prime) * geometry.width * dy
-        
-        Vs_x = (legs_x * transverse_area * fy_tie * dx) / spacing
-        Vs_y = (legs_y * transverse_area * fy_tie * dy) / spacing
-        
-        Vs_max_x = 0.66 * math.sqrt(fc_prime) * geometry.depth * dx
-        Vs_max_y = 0.66 * math.sqrt(fc_prime) * geometry.width * dy
-        
-        Vs_x = min(Vs_x, Vs_max_x)
-        Vs_y = min(Vs_y, Vs_max_y)
-        
-        phi_Vnx = phi_v * (Vc_x + Vs_x) / 1000.0
-        phi_Vny = phi_v * (Vc_y + Vs_y) / 1000.0
-        
-        return phi_Vnx, phi_Vny
-    
-    def perform_complete_column_design(self, loads: ColumnLoads,
-                                     geometry: ColumnGeometry,
-                                     material_props: MaterialProperties) -> ColumnAnalysisResult:
-        """
-        Perform complete iterative column design analysis
-        Auto-increments longitudinal steel area until utilization <= 1.0
-        """
-        base_design_notes = []
-        
-        # --- Check Seismic Geometric Limits ---
-        seismic_warnings = self.check_seismic_geometric_limits(geometry)
-        if seismic_warnings:
-            base_design_notes.extend(seismic_warnings)
-        
-        # --- Determine Area and Limits ---
-        if geometry.shape == ColumnShape.RECTANGULAR:
-            Ag = geometry.width * geometry.depth
-        else:
-            Ag = math.pi * (geometry.width / 2) ** 2
-            
+
+        Vc_x = 0.17 * math.sqrt(material_props.fc_prime) * geometry.depth * dx
+        Vc_y = 0.17 * math.sqrt(material_props.fc_prime) * geometry.width * dy
+        Vs_x = min((legs_x * self.aci.get_bar_area(transverse_bar) * material_props.fyt * dx) / spacing,
+                   0.66 * math.sqrt(material_props.fc_prime) * geometry.depth * dx)
+        Vs_y = min((legs_y * self.aci.get_bar_area(transverse_bar) * material_props.fyt * dy) / spacing,
+                   0.66 * math.sqrt(material_props.fc_prime) * geometry.width * dy)
+
+        return self.phi_factors['shear'] * (Vc_x + Vs_x) / 1000.0, self.phi_factors['shear'] * (Vc_y + Vs_y) / 1000.0
+
+    def perform_complete_column_design(self, loads: ColumnLoads, geometry: ColumnGeometry,
+                                       material_props: MaterialProperties, pref_main: str,
+                                       pref_tie: str) -> ColumnAnalysisResult:
+        base_design_notes = self.check_seismic_geometric_limits(geometry)
+        Ag = geometry.width * geometry.depth if geometry.shape == ColumnShape.RECTANGULAR else math.pi * (
+                    geometry.width / 2) ** 2
         min_rho = self.reinforcement_limits['min_ratio']
         max_rho = 0.06 if geometry.frame_system == FrameSystem.SPECIAL else self.reinforcement_limits['max_ratio']
-        
-        # Base initial guess on simplified static checks to save iteration time
+
         As_guess = self.calculate_required_longitudinal_steel(loads, geometry, material_props)
-        start_rho = max(min_rho, min(As_guess / Ag, max_rho))
-        
-        # Round down to nearest 0.5% (e.g. 0.010, 0.015, 0.020)
-        start_rho = math.floor(start_rho * 200) / 200.0
-        start_rho = max(min_rho, start_rho)
-        
+        start_rho = max(min_rho, math.floor(max(min_rho, min(As_guess / Ag, max_rho)) * 200) / 200.0)
+
         current_rho = start_rho
         best_result = None
-        last_result = None
-        
-        # Iteration Loop: Step up rho by 0.5% each time if it fails
+
         while current_rho <= max_rho + 1e-5:
-            As_target = current_rho * Ag
             current_notes = list(base_design_notes)
-            
-            # 1. Select Bars based on current target area
-            longitudinal_bars = self.select_longitudinal_reinforcement(As_target, geometry)
+            area_bar = self.aci.get_bar_area(pref_main)
+            num_bars = max(4 if geometry.shape == ColumnShape.RECTANGULAR else 6,
+                           math.ceil((current_rho * Ag) / area_bar))
+            if geometry.shape == ColumnShape.RECTANGULAR and num_bars % 2 != 0: num_bars += 1
+            longitudinal_bars = [pref_main] * num_bars
+
             As_provided = sum(self.aci.get_bar_area(bar) for bar in longitudinal_bars)
-            bar_layout = self.generate_bar_layout(geometry, longitudinal_bars, assumed_tie='D10')
-            
-            # 2. Design confinement and shear reinforcement
-            if geometry.column_type == ColumnType.TIED:
-                tie_size, tie_spacing, tie_legs_x, tie_legs_y = self.design_tie_reinforcement(
-                    geometry, longitudinal_bars, loads, material_props
-                )
-                spiral_bar, spiral_pitch, volumetric_ratio = "", 0.0, 0.0
-                
-                transverse_bar = tie_size
-                trans_spacing = tie_spacing
-                legs_x, legs_y = tie_legs_x, tie_legs_y
+            bar_layout = self.generate_bar_layout(geometry, longitudinal_bars, assumed_tie=pref_tie)
 
-                if geometry.frame_system == FrameSystem.SPECIAL:
-                    max_col_dim = max(geometry.width, geometry.depth)
-                    lu = getattr(geometry, 'clear_height', geometry.height - 600) 
-                    lo = max(max_col_dim, lu / 6.0, 450.0)
-                    s_outside = min(6.0 * self.aci.get_bar_diameter(longitudinal_bars[0]), 150.0)
-                    
-                    current_notes.append(f"SMF Detailing: Plastic hinge length (lo) is {lo:.0f} mm from each joint face.")
-                    current_notes.append(f"SMF Detailing: Use {tie_size} hoops @ {tie_spacing:.0f} mm within lo, and @ {s_outside:.0f} mm elsewhere.")
-                else:
-                    current_notes.append(f"Ties detailed with {tie_legs_x} legs parallel to X-axis and {tie_legs_y} legs parallel to Y-axis.")
-            else:
-                spiral_bar, spiral_pitch, volumetric_ratio = self.design_spiral_reinforcement(
-                    geometry, material_props
-                )
-                tie_size, tie_spacing = "", 0.0
-                tie_legs_x, tie_legs_y = 0, 0
-                
-                transverse_bar = spiral_bar
-                trans_spacing = spiral_pitch
-                legs_x, legs_y = 2, 2 
-            
-            # 3. Calculate Shear Capacities
-            phi_Vnx, phi_Vny = self.calculate_shear_capacity(
-                geometry, material_props, transverse_bar, trans_spacing, legs_x, legs_y, longitudinal_bars
-            )
-            
-            # 4. CAPACITY DESIGN FOR SHEAR (Ve)
-            Ve_x = abs(loads.shear_x)
-            Ve_y = abs(loads.shear_y)
+            tie_size, tie_spacing, tie_legs_x, tie_legs_y = self.design_tie_reinforcement(geometry, longitudinal_bars,
+                                                                                          loads, material_props,
+                                                                                          pref_tie)
+            phi_Vnx, phi_Vny = self.calculate_shear_capacity(geometry, material_props, tie_size, tie_spacing,
+                                                             tie_legs_x, tie_legs_y, longitudinal_bars)
 
+            if geometry.frame_system == FrameSystem.SPECIAL and tie_spacing < 75.0:
+                current_notes.append(
+                    f"CRITICAL: Tight tie spacing ({tie_spacing:.0f} mm) needed for confinement. Consider larger column or more main bars to provide tie anchors.")
+
+            Ve_x, Ve_y = abs(loads.shear_x), abs(loads.shear_y)
             if geometry.frame_system == FrameSystem.SPECIAL:
                 lu_m = getattr(geometry, 'clear_height', geometry.height - 600) / 1000.0
                 Mpr_c = self.calculate_probable_moment_capacity(geometry, material_props, bar_layout, loads.axial_force)
-                Ve_col = (2.0 * Mpr_c) / lu_m if lu_m > 0 else Ve_x
-                
-                if loads.sum_beam_mpr_top is not None and loads.sum_beam_mpr_bot is not None:
-                    Ve_beam = (loads.sum_beam_mpr_top + loads.sum_beam_mpr_bot) / lu_m if lu_m > 0 else Ve_col
-                    Ve_req = min(Ve_col, Ve_beam)
-                    current_notes.append(f"SMF Capacity Design: Ve = {Ve_req:.1f} kN (Governed by beam yielding).")
-                else:
-                    Ve_req = Ve_col
-                    current_notes.append(f"SMF Capacity Design: Ve = {Ve_req:.1f} kN (Governed by column Mpr = {Mpr_c:.1f} kN-m).")
+                Ve_req = (2.0 * Mpr_c) / lu_m if lu_m > 0 else Ve_x
+                current_notes.append(
+                    f"SMF Capacity Design: Ve = {Ve_req:.1f} kN (Governed by column Mpr = {Mpr_c:.1f} kN-m).")
+                Ve_x, Ve_y = max(Ve_x, Ve_req), max(Ve_y, Ve_req)
+                if (Ve_req > 0.5 * max(phi_Vnx, phi_Vny)) and (
+                        loads.axial_force * 1000 < (Ag * material_props.fc_prime / 20)):
+                    current_notes.append(
+                        "SMF Detailing: Vc taken as 0 per ACI 18.7.6.2.1 (Low axial load + high seismic shear).")
 
-                Ve_x = max(Ve_x, Ve_req)
-                Ve_y = max(Ve_y, Ve_req)
-                
-                if (Ve_req > 0.5 * max(phi_Vnx, phi_Vny)) and (loads.axial_force * 1000 < (Ag * material_props.fc_prime / 20)):
-                    current_notes.append("SMF Detailing: Vc taken as 0 per ACI 18.7.6.2.1 (Low axial load + high seismic shear).")
+            shear_util_x, shear_util_y = Ve_x / phi_Vnx if phi_Vnx > 0 else 0.0, Ve_y / phi_Vny if phi_Vny > 0 else 0.0
+            slenderness_req, mag_factor = self.check_slenderness_effects(geometry, loads)
+            interaction_ratio = self.calculate_pm_interaction(geometry, material_props, bar_layout,
+                                                              ColumnLoads(loads.axial_force,
+                                                                          loads.moment_x * mag_factor,
+                                                                          loads.moment_y * mag_factor, loads.shear_x,
+                                                                          loads.shear_y,
+                                                                          loads.load_condition) if slenderness_req else loads)
 
-            shear_util_x = Ve_x / phi_Vnx if phi_Vnx > 0 else 0.0
-            shear_util_y = Ve_y / phi_Vny if phi_Vny > 0 else 0.0
-            
-            # 5. Check slenderness effects
-            slenderness_required, magnification_factor = self.check_slenderness_effects(geometry, loads)
-            
-            axial_capacity = self.calculate_axial_capacity(geometry, material_props, As_provided)
-            
-            # 6. P-M interaction analysis
-            interaction_ratio = self.calculate_pm_interaction(
-                geometry, material_props, bar_layout, loads
-            )
-            
-            if slenderness_required:
-                adjusted_loads = ColumnLoads(
-                    axial_force=loads.axial_force,
-                    moment_x=loads.moment_x * magnification_factor,
-                    moment_y=loads.moment_y * magnification_factor,
-                    shear_x=loads.shear_x,
-                    shear_y=loads.shear_y,
-                    load_condition=loads.load_condition
-                )
-                interaction_ratio = self.calculate_pm_interaction(
-                    geometry, material_props, bar_layout, adjusted_loads
-                )
-                
-            governing_utilization = max(interaction_ratio, shear_util_x, shear_util_y)
-            
-            # 7. Add contextual design notes for this specific iteration
-            if slenderness_required:
-                current_notes.append(f"Slenderness effects considered (λ = {magnification_factor:.2f})")
-            
-            if As_provided > As_target * 1.5 and current_rho == min_rho:
-                current_notes.append("Consider reducing section size (minimum steel controls heavily).")
-            
-            if interaction_ratio > 1.0:
-                current_notes.append("Section inadequate in P-M interaction - increasing steel...")
-                
-            if shear_util_x > 1.0 or shear_util_y > 1.0:
-                current_notes.append("Section inadequate in shear - decreasing tie spacing or increasing size...")
+            if slenderness_req: current_notes.append(f"Slenderness considered (λ = {mag_factor:.2f})")
+            if interaction_ratio > 1.0: current_notes.append(
+                "Section inadequate in P-M interaction - increasing steel...")
+            if shear_util_x > 1.0 or shear_util_y > 1.0: current_notes.append(
+                "Section inadequate in shear - increasing tie size/legs...")
 
-            provided_ratio = As_provided / Ag
-            if geometry.frame_system == FrameSystem.SPECIAL:
-                if provided_ratio > 0.06:
-                    current_notes.append(f"SMF Violation: Provided longitudinal reinforcement ratio ({provided_ratio:.3f}) exceeds the 0.06 maximum limit.")
-                current_notes.append("SMF Detailing: Lap splices are only permitted within the center half of the column length (ACI 18.7.4.3).")
-                current_notes.append("SMF Detailing: Lap splices must be enclosed within transverse reinforcement (hoops).")
+            gov_util = max(interaction_ratio, shear_util_x, shear_util_y)
 
-                Mnc_col = self.calculate_nominal_moment_capacity(geometry, material_props, bar_layout, loads.axial_force)
-                
-                if getattr(loads, 'sum_beam_mnb_top', None) is not None:
-                    joint_ratio_top = (2.0 * Mnc_col) / loads.sum_beam_mnb_top if loads.sum_beam_mnb_top > 0 else 9.99
-                    if joint_ratio_top < 1.2:
-                        current_notes.append(f"SMF Violation (Top Joint): Column/Beam strength ratio is {joint_ratio_top:.2f}. Must be >= 1.2.")
-                    else:
-                        current_notes.append(f"SMF SC/WB (Top): PASS with ratio {joint_ratio_top:.2f} >= 1.2.")
+            reinforcement = ColumnReinforcement(longitudinal_bars, As_provided, tie_size, tie_spacing, tie_legs_x,
+                                                tie_legs_y, "", 0.0, 0.0)
+            capacity = ColumnCapacity(self.calculate_axial_capacity(geometry, material_props, As_provided), 0.0, 0.0,
+                                      phi_Vnx, phi_Vny, interaction_ratio, slenderness_req)
+            last_result = ColumnAnalysisResult(capacity, reinforcement, gov_util, shear_util_x, shear_util_y, 0.0,
+                                               current_notes)
 
-                if getattr(loads, 'sum_beam_mnb_bot', None) is not None:
-                    joint_ratio_bot = (2.0 * Mnc_col) / loads.sum_beam_mnb_bot if loads.sum_beam_mnb_bot > 0 else 9.99
-                    if joint_ratio_bot < 1.2:
-                        current_notes.append(f"SMF Violation (Bot Joint): Column/Beam strength ratio is {joint_ratio_bot:.2f}. Must be >= 1.2.")
-                    else:
-                        current_notes.append(f"SMF SC/WB (Bot): PASS with ratio {joint_ratio_bot:.2f} >= 1.2.")
-                        
-                if getattr(loads, 'sum_beam_mnb_top', None) is None:
-                    current_notes.append(f"SMF Note: Column nominal moment Mnc = {Mnc_col:.1f} kN-m. Provide beam Mnb to verify Strong-Column/Weak-Beam.")
-            
-            # Construct Iteration Result
-            reinforcement = ColumnReinforcement(
-                longitudinal_bars=longitudinal_bars,
-                longitudinal_area=As_provided,
-                tie_bars=tie_size,
-                tie_legs_x=tie_legs_x,
-                tie_legs_y=tie_legs_y,
-                tie_spacing=tie_spacing,
-                spiral_bar=spiral_bar,
-                spiral_pitch=spiral_pitch,
-                confinement_ratio=volumetric_ratio
-            )
-            
-            capacity = ColumnCapacity(
-                axial_capacity=axial_capacity,
-                moment_capacity_x=0.0,
-                moment_capacity_y=0.0,
-                shear_capacity_x=phi_Vnx,
-                shear_capacity_y=phi_Vny,
-                interaction_ratio=interaction_ratio,
-                slenderness_effects=slenderness_required
-            )
-            
-            last_result = ColumnAnalysisResult(
-                capacity=capacity,
-                reinforcement=reinforcement,
-                utilization_ratio=governing_utilization,
-                shear_utilization_x=shear_util_x,
-                shear_utilization_y=shear_util_y,
-                stability_index=0.0,
-                design_notes=current_notes
-            )
-            
-            # --- EVALUATE SUCCESS ---
-            if governing_utilization <= 1.0:
+            if gov_util <= 1.0:
                 best_result = last_result
-                break  # Design passes, exit loop
-                
-            # Step up reinforcement for next iteration
+                break
             current_rho += 0.005
-            
-        # 8. Return final result
-        if best_result is not None:
-            return best_result
-            
-        # If we maxed out the steel and still failed, return the final iteration with a critical warning
-        last_result.design_notes.append("CRITICAL: Section inadequate even with maximum reinforcement limit. Increase column dimensions or concrete strength.")
+
+        if best_result is not None: return best_result
+        last_result.design_notes.append(
+            "CRITICAL: Section inadequate even with maximum reinforcement limit. Increase column dimensions.")
         return last_result
+
+    def _calc_beam_hinge_capacities(self, b, d, as_top, as_bot, fc, fy):
+        if b <= 0 or d <= 0: return 0, 0, 0, 0
+        fy_pr = 1.25 * fy
+        mn_neg = as_top * fy * (d - (as_top * fy) / (0.85 * fc * b) / 2.0) / 1e6 if as_top > 0 else 0
+        mn_pos = as_bot * fy * (d - (as_bot * fy) / (0.85 * fc * b) / 2.0) / 1e6 if as_bot > 0 else 0
+        mpr_neg = as_top * fy_pr * (d - (as_top * fy_pr) / (0.85 * fc * b) / 2.0) / 1e6 if as_top > 0 else 0
+        mpr_pos = as_bot * fy_pr * (d - (as_bot * fy_pr) / (0.85 * fc * b) / 2.0) / 1e6 if as_bot > 0 else 0
+        return mn_neg, mn_pos, mpr_neg, mpr_pos
+
+    def evaluate_top_joint_seismic(self, col_geom: ColumnGeometry, mat_props: MaterialProperties,
+                                   col_res: ColumnAnalysisResult,
+                                   bx1: JointBeamElement, bx2: JointBeamElement, by1: JointBeamElement,
+                                   by2: JointBeamElement,
+                                   ca: JointColumnElement, pu: float) -> JointAnalysisResult:
+        notes = []
+
+        def evaluate_direction(b1: JointBeamElement, b2: JointBeamElement, col_b: float, col_h: float,
+                               bending_axis: str):
+            mnb_neg1, mnb_pos1, mpr_neg1, mpr_pos1 = self._calc_beam_hinge_capacities(b1.b, b1.d, b1.as_top, b1.as_bot,
+                                                                                      mat_props.fc_prime,
+                                                                                      mat_props.fy) if b1.exists else (
+                0, 0, 0, 0)
+            mnb_neg2, mnb_pos2, mpr_neg2, mpr_pos2 = self._calc_beam_hinge_capacities(b2.b, b2.d, b2.as_top, b2.as_bot,
+                                                                                      mat_props.fc_prime,
+                                                                                      mat_props.fy) if b2.exists else (
+                0, 0, 0, 0)
+            sum_mnb = max(mnb_pos1 + mnb_neg2, mnb_neg1 + mnb_pos2)
+
+            if sum_mnb == 0: return DirectionalJointResult(False, 0, 0, 0, 0, 0, 0, 1.0)
+
+            layout_below = self.generate_bar_layout(col_geom, col_res.reinforcement.longitudinal_bars,
+                                                    col_res.reinforcement.tie_bars)
+            mnc_below = self.calculate_nominal_moment_capacity(col_geom, mat_props, layout_below, pu, bending_axis)
+
+            mnc_above = 0.0
+            if ca.exists:
+                ca_geom = ColumnGeometry(ca.b, ca.h, 3000, 3000, 40, ColumnShape.RECTANGULAR, ColumnType.TIED, 3000)
+                a_bar = ca.as_total / 4.0
+                cx, cy = max(10.0, ca.b / 2 - 50.0), max(10.0, ca.h / 2 - 50.0)
+                ca_layout = [(cx, cy, a_bar), (-cx, cy, a_bar), (-cx, -cy, a_bar), (cx, -cy, a_bar)]
+                mnc_above = self.calculate_nominal_moment_capacity(ca_geom, mat_props, ca_layout, ca.pu, bending_axis)
+
+            sum_mnc = mnc_below + mnc_above
+            ratio_scwb = sum_mnc / sum_mnb
+            if ratio_scwb < 1.2: notes.append(
+                f"SMF Violation: SC/WB ratio in {bending_axis.upper()}-Direction is {ratio_scwb:.2f}. Must be >= 1.2.")
+
+            bb_max = max(b1.b if b1.exists else 0, b2.b if b2.exists else 0)
+            bj = min(col_b, bb_max + col_h)
+
+            c1 = b1.exists and b1.b >= 0.75 * col_b
+            c2 = b2.exists and b2.b >= 0.75 * col_b
+            c3 = (by1.b >= 0.75 * col_h) if bending_axis == 'x' else (bx1.b >= 0.75 * col_h)
+            c4 = (by2.b >= 0.75 * col_h) if bending_axis == 'x' else (bx2.b >= 0.75 * col_h)
+            confined_count = sum([c1, c2, getattr(by1 if bending_axis == 'x' else bx1, 'exists') and c3,
+                                  getattr(by2 if bending_axis == 'x' else bx2, 'exists') and c4])
+            gamma = 1.7 if confined_count == 4 else (1.2 if confined_count == 3 or (c1 and c2) or (c3 and c4) else 1.0)
+
+            phi_vj = 0.85 * gamma * math.sqrt(mat_props.fc_prime) * (bj * col_h) / 1000.0
+
+            t1 = 1.25 * mat_props.fy * b1.as_top / 1000.0 if b1.exists else 0
+            c2_sw = 1.25 * mat_props.fy * b2.as_bot / 1000.0 if b2.exists else 0
+            vcol1 = (mpr_neg1 + mpr_pos2) / (col_geom.height / 1000.0) if col_geom.height > 0 else 0
+            vj_sway1 = t1 + c2_sw - vcol1
+
+            t2 = 1.25 * mat_props.fy * b2.as_top / 1000.0 if b2.exists else 0
+            c1_sw = 1.25 * mat_props.fy * b1.as_bot / 1000.0 if b1.exists else 0
+            vcol2 = (mpr_neg2 + mpr_pos1) / (col_geom.height / 1000.0) if col_geom.height > 0 else 0
+            vj_sway2 = t2 + c1_sw - vcol2
+
+            vj_u = max(abs(vj_sway1), abs(vj_sway2))
+            ratio_vj = vj_u / phi_vj if phi_vj > 0 else 9.99
+
+            return DirectionalJointResult(True, sum_mnb, sum_mnc, ratio_scwb, vj_u, phi_vj, ratio_vj, gamma)
+
+        x_res = evaluate_direction(bx1, bx2, col_geom.depth, col_geom.width, 'y')
+        y_res = evaluate_direction(by1, by2, col_geom.width, col_geom.depth, 'x')
+
+        return JointAnalysisResult(x_res, y_res, notes)
+
+    def calculate_qto(self, geom: ColumnGeometry, res: ColumnAnalysisResult) -> QTOResult:
+        b_m, h_m, L_m = geom.width / 1000.0, geom.depth / 1000.0, geom.height / 1000.0
+        vol_concrete = b_m * h_m * L_m
+        area_formwork = (2 * (b_m + h_m) + 0.2) * L_m
+        rows = []
+        total_kg = 0.0
+
+        def get_db(bar_str):
+            try:
+                return float(bar_str.split(" ")[1].replace('D', '') if "-leg" in bar_str else bar_str.replace('D', ''))
+            except:
+                return 16.0
+
+        def get_best_commercial_order(req_len, qty, db_mm):
+            stocks, splice_m = [6.0, 7.5, 9.0, 10.5, 12.0], 40 * db_mm / 1000.0
+            if req_len > 12.0:
+                eff_12 = 12.0 - splice_m
+                num_12 = int(req_len // eff_12)
+                rem = req_len - num_12 * eff_12
+                if rem > 0: rem += splice_m
+                best_waste, best_S, best_count = float('inf'), 12.0, 0
+                if rem > 0:
+                    for S in stocks:
+                        if S >= rem:
+                            pieces = int(S // rem)
+                            if pieces > 0:
+                                count = math.ceil(qty / pieces)
+                                waste = count * S - (qty * rem)
+                                if waste < best_waste: best_waste, best_S, best_count = waste, S, count
+                order_parts = []
+                if num_12 * qty > 0: order_parts.append(f"{num_12 * qty} x 12.0m")
+                if rem > 0 and best_count > 0: order_parts.append(f"{best_count} x {best_S}m")
+                return " + ".join(order_parts), ((num_12 * qty) * 12.0 + (best_count * best_S if rem > 0 else 0))
+            else:
+                best_waste, best_S, best_count = float('inf'), 12.0, 0
+                for S in stocks:
+                    if S >= req_len:
+                        pieces = int(S // req_len)
+                        if pieces > 0:
+                            count = math.ceil(qty / pieces)
+                            waste = count * S - (qty * req_len)
+                            if waste < best_waste: best_waste, best_S, best_count = waste, S, count
+                return f"{best_count} x {best_S}m", best_count * best_S
+
+        if res.reinforcement.longitudinal_bars:
+            db_main = get_db(res.reinforcement.longitudinal_bars[0])
+            num_main = len(res.reinforcement.longitudinal_bars)
+
+            num_spliced = math.ceil(num_main / 2.0)
+            num_unspliced = num_main - num_spliced
+
+            if num_spliced > 0:
+                req_len_s = L_m + (40.0 * db_main / 1000.0)
+                stock_txt_s, ordered_m_s = get_best_commercial_order(req_len_s, num_spliced, db_main)
+                weight_s = ordered_m_s * ((db_main ** 2) / 162.0)
+                total_kg += weight_s
+                rows.append(
+                    QTORow("Main Long. (Spliced)", f"D{int(db_main)}", num_spliced, req_len_s, stock_txt_s, weight_s))
+
+            if num_unspliced > 0:
+                req_len_u = L_m
+                stock_txt_u, ordered_m_u = get_best_commercial_order(req_len_u, num_unspliced, db_main)
+                weight_u = ordered_m_u * ((db_main ** 2) / 162.0)
+                total_kg += weight_u
+                rows.append(QTORow("Main Long. (Unspliced)", f"D{int(db_main)}", num_unspliced, req_len_u, stock_txt_u,
+                                   weight_u))
+
+        s_m = max(res.reinforcement.tie_spacing, 50.0) / 1000.0
+        total_stirrups = math.ceil(L_m / s_m)
+        if total_stirrups > 0:
+            db_t = get_db(res.reinforcement.tie_bars)
+            c_m = geom.cover / 1000.0
+            lx, ly = res.reinforcement.tie_legs_x, res.reinforcement.tie_legs_y
+            tie_len_m = (2 * (b_m - 2 * c_m) + 2 * (h_m - 2 * c_m) + 24 * db_t / 1000.0) + (
+                        max(0, ly - 2) * (h_m - 2 * c_m + 24 * db_t / 1000.0) + max(0, lx - 2) * (
+                            b_m - 2 * c_m + 24 * db_t / 1000.0))
+            num_12m = math.ceil((total_stirrups * tie_len_m) / 12.0)
+            weight = num_12m * 12.0 * ((db_t ** 2) / 162.0)
+            total_kg += weight
+            rows.append(
+                QTORow(f"Ties ({lx}x{ly} legs)", f"D{int(db_t)}", total_stirrups, tie_len_m, f"{num_12m} x 12.0m",
+                       weight))
+
+        return QTOResult(vol_concrete, area_formwork, total_kg, rows)
