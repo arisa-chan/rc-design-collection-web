@@ -12,6 +12,8 @@ A powerful Python web application built with the Air web framework for designing
 
 Perform serviceability checks, generate reinforcement details, and calculate quantity takeoffs, all while ensuring code compliance, including constructability and seismic requirements. Best of all, since this is a web application, you can do the calculations on any device, anytime, anywhere, even while on the go.
 
+The web application can be accessed at [https://rc-design-collection.onrender.com](https://rc-design-collection.onrender.com). (Note that first time access of this website may take a minute or more as I am just using the free tier of Render.)
+
 ## 🚀 Features & Modules
 
 ### 1. RC Beam Design `(v0.8 Beta)`
