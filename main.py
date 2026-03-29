@@ -1,14 +1,17 @@
 import air
 import beam
 import column
+import slab
 from shared import expressive_layout
 
 # Initialize the Air App
 app = air.Air()
 
-# Register the Beam module routes directly to our app
+# Register the module routes directly to our app
 beam.setup_beam_routes(app)
 column.setup_column_routes(app)
+slab.setup_slab_routes(app)
+
 
 @app.page
 def index(request: air.Request):
@@ -33,33 +36,33 @@ def index(request: air.Request):
                         air.A("Launch", href="/beam", class_="button", style="width: 100%; box-sizing: border-box;"),
                         class_="card"
                     ),
-                    
-                    # Column Designer Card (Placeholder for future)
+
+                    # Column Designer Card (Active)
                     air.Div(
                         air.H3("RC Column Designer"),
                         air.P("v0.8 beta.", style="color: var(--text-muted); margin-bottom: 24px;"),
                         air.A("Launch", href="/column", class_="button", style="width: 100%; box-sizing: border-box;"),
                         class_="card"
                     ),
-                    
-                    # Slab Designer Card (Placeholder for future)
+
+                    # Slab Designer Card (Now Active!)
                     air.Div(
-                        air.H3("RC Slab Designer", style="color: var(--text-muted);"),
-                        air.P("Still cooking...", style="color: var(--text-muted); margin-bottom: 24px;"),
-                        air.A("Coming Soon", href="#", class_="button secondary", style="width: 100%; box-sizing: border-box; pointer-events: none; opacity: 0.5;"),
-                        class_="card",
-                        style="background: #f9fafb; border-color: #e5e7eb;"
+                        air.H3("RC Slab Designer"),
+                        air.P("v0.1 developer preview. Expect bugs, wrong results and/or missing features. Refinements ongoing.", style="color: var(--text-muted); margin-bottom: 24px;"),
+                        air.A("Launch", href="/slab", class_="button", style="width: 100%; box-sizing: border-box;"),
+                        class_="card"
                     ),
-                    
+
                     # Footing Designer Card (Placeholder for future)
                     air.Div(
                         air.H3("RC Isolated Footing Designer", style="color: var(--text-muted);"),
                         air.P("Still cooking...", style="color: var(--text-muted); margin-bottom: 24px;"),
-                        air.A("Coming Soon", href="#", class_="button secondary", style="width: 100%; box-sizing: border-box; pointer-events: none; opacity: 0.5;"),
+                        air.A("Coming Soon", href="#", class_="button secondary",
+                              style="width: 100%; box-sizing: border-box; pointer-events: none; opacity: 0.5;"),
                         class_="card",
                         style="background: #f9fafb; border-color: #e5e7eb;"
                     ),
-                    
+
                     class_="grid-2"
                 )
             )
