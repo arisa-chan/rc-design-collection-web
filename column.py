@@ -28,8 +28,8 @@ class ColumnDesignModel(BaseModel):
     # Geometry
     width: float = AirField(default=500.0)  # b (X-axis)
     depth: float = AirField(default=500.0)  # h (Y-axis)
-    height: float = AirField(default=3200.0)  # Total height Center-to-Center
-    clear_height: float = AirField(default=2800.0)  # lu
+    height: float = AirField(default=3200.0)
+    clear_height: float = AirField(default=2800.0)
 
     # Seismic & Materials
     sdc: str = AirField(default="D")
@@ -53,25 +53,38 @@ class ColumnDesignModel(BaseModel):
     bot_vux: float = AirField(default=120.0)
     bot_vuy: float = AirField(default=90.0)
 
-    # Beam details (Top Joint) - For SC/WB Check
-    top_b1_b: float = AirField(default=300.0)
-    top_b1_d: float = AirField(default=440.0)
-    top_b1_as_top: float = AirField(default=1200.0)
-    top_b1_as_bot: float = AirField(default=600.0)
-    top_b2_b: float = AirField(default=300.0)
-    top_b2_d: float = AirField(default=440.0)
-    top_b2_as_top: float = AirField(default=1200.0)
-    top_b2_as_bot: float = AirField(default=600.0)
+    # Top Joint Connected Elements - X Direction
+    top_bx1_exists: str = AirField(default="yes")
+    top_bx1_b: float = AirField(default=300.0)
+    top_bx1_d: float = AirField(default=440.0)
+    top_bx1_as_top: float = AirField(default=1200.0)
+    top_bx1_as_bot: float = AirField(default=600.0)
 
-    # Beam details (Bottom Joint) - For SC/WB Check
-    bot_b1_b: float = AirField(default=300.0)
-    bot_b1_d: float = AirField(default=440.0)
-    bot_b1_as_top: float = AirField(default=1200.0)
-    bot_b1_as_bot: float = AirField(default=600.0)
-    bot_b2_b: float = AirField(default=300.0)
-    bot_b2_d: float = AirField(default=440.0)
-    bot_b2_as_top: float = AirField(default=1200.0)
-    bot_b2_as_bot: float = AirField(default=600.0)
+    top_bx2_exists: str = AirField(default="yes")
+    top_bx2_b: float = AirField(default=300.0)
+    top_bx2_d: float = AirField(default=440.0)
+    top_bx2_as_top: float = AirField(default=1200.0)
+    top_bx2_as_bot: float = AirField(default=600.0)
+
+    # Top Joint Connected Elements - Y Direction
+    top_by1_exists: str = AirField(default="no")
+    top_by1_b: float = AirField(default=300.0)
+    top_by1_d: float = AirField(default=440.0)
+    top_by1_as_top: float = AirField(default=1200.0)
+    top_by1_as_bot: float = AirField(default=600.0)
+
+    top_by2_exists: str = AirField(default="no")
+    top_by2_b: float = AirField(default=300.0)
+    top_by2_d: float = AirField(default=440.0)
+    top_by2_as_top: float = AirField(default=1200.0)
+    top_by2_as_bot: float = AirField(default=600.0)
+
+    # Top Joint Column Above
+    top_ca_exists: str = AirField(default="yes")
+    top_ca_b: float = AirField(default=500.0)
+    top_ca_h: float = AirField(default=500.0)
+    top_ca_as: float = AirField(default=2400.0)
+    top_ca_pu: float = AirField(default=2000.0)
 
 
 # ----------------------------------------------------------------------
@@ -95,20 +108,79 @@ class ControlledColumnDesign(ACI318M25ColumnDesign):
 
         return [self.pref_main] * num_bars
 
+    def calculate_Mnc(self, geometry: ColumnGeometry, material_props: MaterialProperties, bar_layout: list,
+                      axial_load: float, bending_axis: str) -> float:
+        fc_prime = material_props.fc_prime
+        fy = material_props.fy
+        Es = 200000.0
+        ecu = 0.003
+        P_target = abs(axial_load)
+
+        hx, hy = geometry.width, geometry.depth
+
+        if bending_axis == 'x':
+            h = hy
+            b = hx
+        else:
+            h = hx
+            b = hy
+
+        beta1 = 0.85 if fc_prime <= 28 else max(0.65, 0.85 - 0.05 * (fc_prime - 28) / 7.0)
+
+        steel_area = sum(a for _, _, a in bar_layout)
+        Ag = hx * hy
+        Po = 0.85 * fc_prime * (Ag - steel_area) + fy * steel_area
+        Pn_max = Po / 1000.0
+        if P_target > Pn_max: return 0.001
+
+        curve_Pn = []
+        curve_Mn = []
+        c_values = [h * x for x in
+                    [10.0, 5.0, 2.0, 1.5, 1.2, 1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.05, 0.01]]
+
+        for c in c_values:
+            Pn = 0.0
+            Mn = 0.0
+            a = min(beta1 * c, h)
+            if a > 0:
+                Cc = (0.85 * fc_prime * a * b) / 1000.0
+                y_c = h / 2.0 - a / 2.0
+                Pn += Cc
+                Mn += Cc * (y_c / 1000.0)
+
+            for x_bar, y_bar, a_bar in bar_layout:
+                d_i = h / 2.0 - y_bar if bending_axis == 'x' else h / 2.0 - x_bar
+                strain = ecu * (c - d_i) / c
+                stress = max(-fy, min(fy, strain * Es))
+                if d_i < a:
+                    stress -= 0.85 * fc_prime
+
+                Fs = a_bar * stress
+                Pn += Fs / 1000.0
+                Mn += (Fs / 1000.0) * (h / 2.0 - d_i) / 1000.0
+
+            curve_Pn.append(Pn)
+            curve_Mn.append(Mn)
+
+        for i in range(len(curve_Pn) - 1):
+            p1, p2 = curve_Pn[i], curve_Pn[i + 1]
+            m1, m2 = curve_Mn[i], curve_Mn[i + 1]
+            if min(p1, p2) <= P_target <= max(p1, p2):
+                if p1 == p2: return max(m1, m2)
+                return m1 + (m2 - m1) * (P_target - p1) / (p2 - p1)
+        return 0.001
+
 
 def get_beam_capacities(b, d, as_top, as_bot, fc, fy):
-    """Calculates Nominal and Probable Flexural Capacities of a single beam framing into a joint."""
     if b <= 0 or d <= 0: return 0, 0, 0, 0
     fy_pr = 1.25 * fy
 
-    # Nominal Capacities (Mnb) - using fy
     a_top = (as_top * fy) / (0.85 * fc * b) if b > 0 else 0
     mn_neg = as_top * fy * (d - a_top / 2.0) / 1e6 if as_top > 0 else 0
 
     a_bot = (as_bot * fy) / (0.85 * fc * b) if b > 0 else 0
     mn_pos = as_bot * fy * (d - a_bot / 2.0) / 1e6 if as_bot > 0 else 0
 
-    # Probable Capacities (Mpr) - using 1.25fy
     a_pr_top = (as_top * fy_pr) / (0.85 * fc * b) if b > 0 else 0
     mpr_neg = as_top * fy_pr * (d - a_pr_top / 2.0) / 1e6 if as_top > 0 else 0
 
@@ -116,6 +188,28 @@ def get_beam_capacities(b, d, as_top, as_bot, fc, fy):
     mpr_pos = as_bot * fy_pr * (d - a_pr_bot / 2.0) / 1e6 if as_bot > 0 else 0
 
     return mn_neg, mn_pos, mpr_neg, mpr_pos
+
+
+def get_col_above_capacities(b, h, ast, pu, fc, fy, bending_axis='y'):
+    if b <= 0 or h <= 0 or ast <= 0: return 0.0
+    a_bar = ast / 4.0
+    cover = 40.0
+    dt = 10.0
+    x_max = max(10.0, b / 2.0 - cover - dt - 10.0)
+    y_max = max(10.0, h / 2.0 - cover - dt - 10.0)
+
+    layout = [
+        (x_max, y_max, a_bar), (-x_max, y_max, a_bar),
+        (-x_max, -y_max, a_bar), (x_max, -y_max, a_bar)
+    ]
+
+    geom = ColumnGeometry(width=b, depth=h, height=3000, clear_height=3000, cover=cover, shape=ColumnShape.RECTANGULAR,
+                          column_type=ColumnType.TIED, effective_length=3000)
+    mat = MaterialProperties(fc_prime=fc, fy=fy, fu=fy * 1.25, fyt=fy, fut=fy * 1.25, es=200000,
+                             ec=4700 * math.sqrt(fc), gamma_c=24, description="")
+
+    engine = ControlledColumnDesign("D16", "D10")
+    return engine.calculate_Mnc(geom, mat, layout, pu, bending_axis)
 
 
 def calculate_column_qto(geom: ColumnGeometry, res: 'ColumnAnalysisResult'):
@@ -135,7 +229,6 @@ def calculate_column_qto(geom: ColumnGeometry, res: 'ColumnAnalysisResult'):
     def get_best_commercial_order(req_len, qty, db_mm):
         stocks = [6.0, 7.5, 9.0, 10.5, 12.0]
         splice_m = 40 * db_mm / 1000.0
-
         if req_len > 12.0:
             eff_12 = 12.0 - splice_m
             num_12 = int(req_len // eff_12)
@@ -150,9 +243,7 @@ def calculate_column_qto(geom: ColumnGeometry, res: 'ColumnAnalysisResult'):
                         if pieces_per_S > 0:
                             count = math.ceil(qty / pieces_per_S)
                             waste = count * S - (qty * rem)
-                            if waste < best_waste:
-                                best_waste, best_S, best_count = waste, S, count
-
+                            if waste < best_waste: best_waste, best_S, best_count = waste, S, count
             total_12m = num_12 * qty
             order_parts = []
             if total_12m > 0: order_parts.append(f"{total_12m} x 12.0m")
@@ -166,8 +257,7 @@ def calculate_column_qto(geom: ColumnGeometry, res: 'ColumnAnalysisResult'):
                     if pieces_per_S > 0:
                         count = math.ceil(qty / pieces_per_S)
                         waste = count * S - (qty * req_len)
-                        if waste < best_waste:
-                            best_waste, best_S, best_count = waste, S, count
+                        if waste < best_waste: best_waste, best_S, best_count = waste, S, count
             return f"{best_count} x {best_S}m", best_count * best_S
 
     def add_rebar(name, bars_list, base_len, splice_factor=40.0):
@@ -223,16 +313,13 @@ def generate_column_section_css(width, depth, cover, num_bars, legs_x, legs_y):
     core_w, core_h = draw_w - 2 * c_s, draw_h - 2 * c_s
 
     if core_w > 0 and core_h > 0:
-        # Outer Tie
         children.append(air.Div(
             style=f"position: absolute; left: {c_s}px; top: {c_s}px; width: {core_w}px; height: {core_h}px; border: 2px dashed #db2777; border-radius: 4px; box-sizing: border-box;"))
-        # Inner Ties (X)
         if legs_x > 2:
             spacing_x = core_w / (legs_x - 1)
             for i in range(1, legs_x - 1):
                 children.append(air.Div(
                     style=f"position: absolute; left: {c_s + i * spacing_x}px; top: {c_s}px; width: 0px; height: {core_h}px; border-left: 2px dashed #db2777; box-sizing: border-box;"))
-        # Inner Ties (Y)
         if legs_y > 2:
             spacing_y = core_h / (legs_y - 1)
             for i in range(1, legs_y - 1):
@@ -243,9 +330,7 @@ def generate_column_section_css(width, depth, cover, num_bars, legs_x, legs_y):
         children.append(air.Div(
             style=f"position: absolute; left: {x - 6}px; top: {y - 6}px; width: 12px; height: 12px; background: #2563eb; border: 2px solid #111827; border-radius: 50%; box-sizing: border-box;"))
 
-    # FIX: Calculate exact bar distribution using the mathematical engine logic
-    nx_face = 0
-    ny_face = 0
+    nx_face, ny_face = 0, 0
     if num_bars > 4:
         rem = num_bars - 4
         ratio = width / (width + depth) if (width + depth) > 0 else 0.5
@@ -255,20 +340,17 @@ def generate_column_section_css(width, depth, cover, num_bars, legs_x, legs_y):
         ny_face = ny_inter // 2
 
     if core_w >= 0 and core_h >= 0:
-        # 4 Corners
         add_bar(c_s, c_s)
         add_bar(c_s + core_w, c_s)
         add_bar(c_s, c_s + core_h)
         add_bar(c_s + core_w, c_s + core_h)
 
-        # Top and Bottom faces
         if nx_face > 0:
             sp_x = core_w / (nx_face + 1)
             for i in range(1, nx_face + 1):
                 add_bar(c_s + i * sp_x, c_s)
                 add_bar(c_s + i * sp_x, c_s + core_h)
 
-        # Left and Right faces
         if ny_face > 0:
             sp_y = core_h / (ny_face + 1)
             for i in range(1, ny_face + 1):
@@ -283,54 +365,89 @@ def generate_column_section_css(width, depth, cover, num_bars, legs_x, legs_y):
         air.Div(air.Div(f"{depth} mm",
                         style="position: absolute; left: -65px; top: 50%; transform: translateY(-50%); font-family: monospace; font-weight: 700; color: #6b7280;"),
                 concrete_block, style="position: relative; display: inline-block; margin-left: 40px;"),
-        style="display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 32px 0; background: #ffffff; border-radius: 8px; border: 2px dashed #e5e7eb; height: 100%;"
+        style="display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 32px 0; background: #ffffff; border-radius: 8px; border: 2px dashed #e5e7eb; min-height: 280px;"
     )
 
 
-def render_beam_modal(modal_id, title, prefix, data):
+def render_top_joint_modal(modal_id, data):
     modal_style = "display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.6);"
-    content_style = "background-color: #fefefe; margin: 5% auto; padding: 24px; border: 1px solid #888; width: 90%; max-width: 600px; border-radius: 8px; position: relative;"
+    content_style = "background-color: #fefefe; margin: 5% auto; padding: 24px; border: 1px solid #888; width: 95%; max-width: 800px; border-radius: 8px; position: relative;"
     close_style = "color: #aaa; position: absolute; right: 20px; top: 15px; font-size: 28px; font-weight: bold; cursor: pointer;"
+
+    def render_element_block(title, prefix, is_col=False):
+        exists_val = getattr(data, f"{prefix}_exists")
+        display_style = "block" if exists_val == "yes" else "none"
+        js_func = f"document.getElementById('{prefix}_fields').style.display = this.value === 'yes' ? 'block' : 'none';"
+
+        if is_col:
+            fields = [
+                air.Div(air.Label("Width b (mm)"),
+                        air.Input(type="number", name=f"{prefix}_b", value=str(getattr(data, f"{prefix}_b")),
+                                  step="any"), class_="form-group"),
+                air.Div(air.Label("Depth h (mm)"),
+                        air.Input(type="number", name=f"{prefix}_h", value=str(getattr(data, f"{prefix}_h")),
+                                  step="any"), class_="form-group"),
+                air.Div(air.Label("Total As (mm²)"),
+                        air.Input(type="number", name=f"{prefix}_as", value=str(getattr(data, f"{prefix}_as")),
+                                  step="any"), class_="form-group"),
+                air.Div(air.Label("Axial Pu (kN)"),
+                        air.Input(type="number", name=f"{prefix}_pu", value=str(getattr(data, f"{prefix}_pu")),
+                                  step="any"), class_="form-group")
+            ]
+        else:
+            fields = [
+                air.Div(air.Label("Width b (mm)"),
+                        air.Input(type="number", name=f"{prefix}_b", value=str(getattr(data, f"{prefix}_b")),
+                                  step="any"), class_="form-group"),
+                air.Div(air.Label("Eff. Depth d (mm)"),
+                        air.Input(type="number", name=f"{prefix}_d", value=str(getattr(data, f"{prefix}_d")),
+                                  step="any"), class_="form-group"),
+                air.Div(air.Label("As Top (mm²)"),
+                        air.Input(type="number", name=f"{prefix}_as_top", value=str(getattr(data, f"{prefix}_as_top")),
+                                  step="any"), class_="form-group"),
+                air.Div(air.Label("As Bot (mm²)"),
+                        air.Input(type="number", name=f"{prefix}_as_bot", value=str(getattr(data, f"{prefix}_as_bot")),
+                                  step="any"), class_="form-group")
+            ]
+
+        return air.Div(
+            air.H4(title, style="margin-bottom: 12px; color: #4b5563; font-size: 15px;"),
+            air.Div(air.Label("Is element present?"),
+                    air.Select(air.Option("Yes", value="yes", selected=exists_val == "yes"),
+                               air.Option("No", value="no", selected=exists_val == "no"), name=f"{prefix}_exists",
+                               onchange=js_func), class_="form-group"),
+            air.Div(*fields, id=f"{prefix}_fields", style=f"display: {display_style};"),
+            class_="section-box"
+        )
 
     return air.Div(
         air.Div(
             air.Span("×", style=close_style, onclick=f"document.getElementById('{modal_id}').style.display='none'"),
-            air.H3(title, style="margin-bottom: 24px; color: #1e3a8a;"),
+            air.H3("Top Joint Connected Elements", style="margin-bottom: 16px; color: #1e3a8a;"),
+            air.P(
+                "Define members framing into the top joint. Select 'No' if an element does not exist. X-Direction beams span along the column width (b), producing moment about the Y-axis.",
+                style="color: #6b7280; font-size: 14px; margin-bottom: 20px;"),
+
+            air.H4("X-Direction Framing (Shear along X-Axis)",
+                   style="border-bottom: 1px solid #e5e7eb; padding-bottom: 8px; margin-bottom: 16px;"),
             air.Div(
-                air.Div(
-                    air.H4("Beam 1 (e.g., Left Face)", style="margin-bottom: 12px; color: #4b5563;"),
-                    air.Div(air.Label("Width b (mm)"),
-                            air.Input(type="number", name=f"{prefix}_b1_b", value=str(getattr(data, f"{prefix}_b1_b")),
-                                      step="any"), class_="form-group"),
-                    air.Div(air.Label("Eff. Depth d (mm)"),
-                            air.Input(type="number", name=f"{prefix}_b1_d", value=str(getattr(data, f"{prefix}_b1_d")),
-                                      step="any"), class_="form-group"),
-                    air.Div(air.Label("As Top (mm²)"), air.Input(type="number", name=f"{prefix}_b1_as_top",
-                                                                 value=str(getattr(data, f"{prefix}_b1_as_top")),
-                                                                 step="any"), class_="form-group"),
-                    air.Div(air.Label("As Bot (mm²)"), air.Input(type="number", name=f"{prefix}_b1_as_bot",
-                                                                 value=str(getattr(data, f"{prefix}_b1_as_bot")),
-                                                                 step="any"), class_="form-group"),
-                    class_="section-box"
-                ),
-                air.Div(
-                    air.H4("Beam 2 (e.g., Right Face)", style="margin-bottom: 12px; color: #4b5563;"),
-                    air.Div(air.Label("Width b (mm)"),
-                            air.Input(type="number", name=f"{prefix}_b2_b", value=str(getattr(data, f"{prefix}_b2_b")),
-                                      step="any"), class_="form-group"),
-                    air.Div(air.Label("Eff. Depth d (mm)"),
-                            air.Input(type="number", name=f"{prefix}_b2_d", value=str(getattr(data, f"{prefix}_b2_d")),
-                                      step="any"), class_="form-group"),
-                    air.Div(air.Label("As Top (mm²)"), air.Input(type="number", name=f"{prefix}_b2_as_top",
-                                                                 value=str(getattr(data, f"{prefix}_b2_as_top")),
-                                                                 step="any"), class_="form-group"),
-                    air.Div(air.Label("As Bot (mm²)"), air.Input(type="number", name=f"{prefix}_b2_as_bot",
-                                                                 value=str(getattr(data, f"{prefix}_b2_as_bot")),
-                                                                 step="any"), class_="form-group"),
-                    class_="section-box"
-                ),
-                class_="grid-2"
+                render_element_block("Beam X1", "top_bx1", is_col=False),
+                render_element_block("Beam X2", "top_bx2", is_col=False),
+                class_="grid-2", style="margin-bottom: 24px;"
             ),
+
+            air.H4("Y-Direction Framing (Shear along Y-Axis)",
+                   style="border-bottom: 1px solid #e5e7eb; padding-bottom: 8px; margin-bottom: 16px;"),
+            air.Div(
+                render_element_block("Beam Y1", "top_by1", is_col=False),
+                render_element_block("Beam Y2", "top_by2", is_col=False),
+                class_="grid-2", style="margin-bottom: 24px;"
+            ),
+
+            air.H4("Column Continuation",
+                   style="border-bottom: 1px solid #e5e7eb; padding-bottom: 8px; margin-bottom: 16px;"),
+            render_element_block("Column Above", "top_ca", is_col=True),
+
             air.Button("Save & Close", type="button",
                        onclick=f"document.getElementById('{modal_id}').style.display='none'",
                        style="width: 100%; margin-top: 16px; background-color: #10b981; border: none;"),
@@ -363,7 +480,6 @@ def setup_column_routes(app):
 
         show_seismic = data.sdc in ["D", "E", "F"] and data.frame_system == "special"
         panel_display = "block" if show_seismic else "none"
-
         js_toggle = "var s=document.getElementsByName('sdc')[0].value; var f=document.getElementsByName('frame_system')[0].value; var p=document.getElementById('seismic_joint_panel'); if((s==='D'||s==='E'||s==='F')&&f==='special'){p.style.display='block';}else{p.style.display='none';}"
 
         return expressive_layout(
@@ -493,16 +609,13 @@ def setup_column_routes(app):
 
                         # SC/WB Seismic Panel
                         air.Div(
-                            air.H3("Seismic Joint Demands (SMF Strong-Column/Weak-Beam Check)"),
+                            air.H3("Seismic Joint Checks (SMF SC/WB & Joint Shear)"),
                             air.P(
-                                "To satisfy ACI 18.7.3.2, define the beams framing into the column. The engine will automatically calculate and verify the Mpr (shear) and Mnb (flexure) requirements.",
+                                "To satisfy ACI 18.7 and 18.8, define the elements framing into the top joint. The engine will automatically evaluate Bi-Directional SC/WB and Joint Shear.",
                                 style="color: #4b5563; font-size: 14px; margin-bottom: 16px;"),
                             air.Div(
-                                air.Button("Define Top Joint Beams", type="button",
+                                air.Button("Define Top Joint Elements", type="button",
                                            onclick="document.getElementById('topModal').style.display='block'",
-                                           style="margin-right: 16px; background-color: #3b82f6; border:none;"),
-                                air.Button("Define Bottom Joint Beams", type="button",
-                                           onclick="document.getElementById('botModal').style.display='block'",
                                            style="background-color: #3b82f6; border:none;"),
                                 style="display: flex;"
                             ),
@@ -510,8 +623,7 @@ def setup_column_routes(app):
                             style=f"display: {panel_display}; margin-top: 24px; padding: 24px; background: #eff6ff; border-radius: 8px; border: 1px dashed #93c5fd;"
                         ),
 
-                        render_beam_modal("topModal", "Top Joint Framing Beams", "top", data),
-                        render_beam_modal("botModal", "Bottom Joint Framing Beams", "bot", data),
+                        render_top_joint_modal("topModal", data),
 
                         air.Button("Analyze Column", type="submit",
                                    style="width: 100%; font-size: 18px; margin-top: 32px;"),
@@ -554,41 +666,214 @@ def setup_column_routes(app):
             max_vux = max(abs(data.top_vux), abs(data.bot_vux))
             max_vuy = max(abs(data.top_vuy), abs(data.bot_vuy))
 
-            t1_mnb_neg, t1_mnb_pos, t1_mpr_neg, t1_mpr_pos = get_beam_capacities(data.top_b1_b, data.top_b1_d,
-                                                                                 data.top_b1_as_top, data.top_b1_as_bot,
-                                                                                 data.fc_prime, data.fy)
-            t2_mnb_neg, t2_mnb_pos, t2_mpr_neg, t2_mpr_pos = get_beam_capacities(data.top_b2_b, data.top_b2_d,
-                                                                                 data.top_b2_as_top, data.top_b2_as_bot,
-                                                                                 data.fc_prime, data.fy)
-
-            sum_mnb_top = max(t1_mnb_pos + t2_mnb_neg, t1_mnb_neg + t2_mnb_pos)
-            sum_mpr_top = max(t1_mpr_pos + t2_mpr_neg, t1_mpr_neg + t2_mpr_pos)
-
-            b1_mnb_neg, b1_mnb_pos, b1_mpr_neg, b1_mpr_pos = get_beam_capacities(data.bot_b1_b, data.bot_b1_d,
-                                                                                 data.bot_b1_as_top, data.bot_b1_as_bot,
-                                                                                 data.fc_prime, data.fy)
-            b2_mnb_neg, b2_mnb_pos, b2_mpr_neg, b2_mpr_pos = get_beam_capacities(data.bot_b2_b, data.bot_b2_d,
-                                                                                 data.bot_b2_as_top, data.bot_b2_as_bot,
-                                                                                 data.fc_prime, data.fy)
-
-            sum_mnb_bot = max(b1_mnb_pos + b2_mnb_neg, b1_mnb_neg + b2_mnb_pos)
-            sum_mpr_bot = max(b1_mpr_pos + b2_mpr_neg, b1_mpr_neg + b2_mpr_pos)
-
             col_loads = ColumnLoads(
                 axial_force=data.pu, moment_x=max_mux, moment_y=max_muy, shear_x=max_vux, shear_y=max_vuy,
                 load_condition=LoadCondition.BIAXIAL_BENDING,
-                sum_beam_mpr_top=sum_mpr_top, sum_beam_mpr_bot=sum_mpr_bot,
-                sum_beam_mnb_top=sum_mnb_top, sum_beam_mnb_bot=sum_mnb_bot
+                sum_beam_mpr_top=None, sum_beam_mpr_bot=None,
+                sum_beam_mnb_top=None, sum_beam_mnb_bot=None
             )
 
             engine = ControlledColumnDesign(data.pref_main, data.pref_tie)
             res = engine.perform_complete_column_design(col_loads, col_geom, mat_props)
 
+            # --- SC/WB & Joint Shear Bi-Directional Engine ---
+            sc_wb_element = ""
+            if data.sdc in ["D", "E", "F"] and data.frame_system == "special":
+
+                # --- X-Direction Framing (Bending about Y-axis, Shear along X-axis) ---
+                bx1_mnb_pos = bx1_mnb_neg = bx1_mpr_pos = bx1_mpr_neg = 0.0
+                if data.top_bx1_exists == "yes":
+                    bx1_mnb_neg, bx1_mnb_pos, bx1_mpr_neg, bx1_mpr_pos = get_beam_capacities(data.top_bx1_b,
+                                                                                             data.top_bx1_d,
+                                                                                             data.top_bx1_as_top,
+                                                                                             data.top_bx1_as_bot,
+                                                                                             data.fc_prime, data.fy)
+
+                bx2_mnb_pos = bx2_mnb_neg = bx2_mpr_pos = bx2_mpr_neg = 0.0
+                if data.top_bx2_exists == "yes":
+                    bx2_mnb_neg, bx2_mnb_pos, bx2_mpr_neg, bx2_mpr_pos = get_beam_capacities(data.top_bx2_b,
+                                                                                             data.top_bx2_d,
+                                                                                             data.top_bx2_as_top,
+                                                                                             data.top_bx2_as_bot,
+                                                                                             data.fc_prime, data.fy)
+
+                sum_mnb_x_dir = max(bx1_mnb_pos + bx2_mnb_neg, bx1_mnb_neg + bx2_mnb_pos)
+
+                # --- Y-Direction Framing (Bending about X-axis, Shear along Y-axis) ---
+                by1_mnb_pos = by1_mnb_neg = by1_mpr_pos = by1_mpr_neg = 0.0
+                if data.top_by1_exists == "yes":
+                    by1_mnb_neg, by1_mnb_pos, by1_mpr_neg, by1_mpr_pos = get_beam_capacities(data.top_by1_b,
+                                                                                             data.top_by1_d,
+                                                                                             data.top_by1_as_top,
+                                                                                             data.top_by1_as_bot,
+                                                                                             data.fc_prime, data.fy)
+
+                by2_mnb_pos = by2_mnb_neg = by2_mpr_pos = by2_mpr_neg = 0.0
+                if data.top_by2_exists == "yes":
+                    by2_mnb_neg, by2_mnb_pos, by2_mpr_neg, by2_mpr_pos = get_beam_capacities(data.top_by2_b,
+                                                                                             data.top_by2_d,
+                                                                                             data.top_by2_as_top,
+                                                                                             data.top_by2_as_bot,
+                                                                                             data.fc_prime, data.fy)
+
+                sum_mnb_y_dir = max(by1_mnb_pos + by2_mnb_neg, by1_mnb_neg + by2_mnb_pos)
+
+                layout = engine.generate_bar_layout(col_geom, res.reinforcement.longitudinal_bars,
+                                                    res.reinforcement.tie_bars)
+                mnc_below_y_axis = engine.calculate_Mnc(col_geom, mat_props, layout, data.pu, bending_axis='y')
+                mnc_below_x_axis = engine.calculate_Mnc(col_geom, mat_props, layout, data.pu, bending_axis='x')
+
+                mnc_above_y_axis = mnc_above_x_axis = 0.0
+                if data.top_ca_exists == "yes":
+                    mnc_above_y_axis = get_col_above_capacities(data.top_ca_b, data.top_ca_h, data.top_ca_as,
+                                                                data.top_ca_pu, data.fc_prime, data.fy,
+                                                                bending_axis='y')
+                    mnc_above_x_axis = get_col_above_capacities(data.top_ca_b, data.top_ca_h, data.top_ca_as,
+                                                                data.top_ca_pu, data.fc_prime, data.fy,
+                                                                bending_axis='x')
+
+                sum_mnc_x_dir = mnc_below_y_axis + mnc_above_y_axis
+                sum_mnc_y_dir = mnc_below_x_axis + mnc_above_x_axis
+
+                # --- Joint Shear Geometry & Confinement ---
+                col_h_x = data.width
+                col_b_x = data.depth
+                col_h_y = data.depth
+                col_b_y = data.width
+
+                c_x1 = data.top_bx1_exists == 'yes' and data.top_bx1_b >= 0.75 * col_b_x
+                c_x2 = data.top_bx2_exists == 'yes' and data.top_bx2_b >= 0.75 * col_b_x
+                c_y1 = data.top_by1_exists == 'yes' and data.top_by1_b >= 0.75 * col_b_y
+                c_y2 = data.top_by2_exists == 'yes' and data.top_by2_b >= 0.75 * col_b_y
+
+                confined_count = sum([c_x1, c_x2, c_y1, c_y2])
+                if confined_count == 4:
+                    gamma = 1.7
+                elif confined_count == 3 or (c_x1 and c_x2) or (c_y1 and c_y2):
+                    gamma = 1.2
+                else:
+                    gamma = 1.0
+
+                phi_j = 0.85
+
+                # X-Direction Checks
+                ratio_x = sum_mnc_x_dir / sum_mnb_x_dir if sum_mnb_x_dir > 0 else 9.99
+                color_x = "#16A34A" if ratio_x >= 1.2 or sum_mnb_x_dir == 0 else "#DC2626"
+
+                vj_x_u = phi_vj_x = ratio_vj_x = 0.0
+                if data.top_bx1_exists == 'yes' or data.top_bx2_exists == 'yes':
+                    bb_x = max([data.top_bx1_b if data.top_bx1_exists == 'yes' else 0,
+                                data.top_bx2_b if data.top_bx2_exists == 'yes' else 0])
+                    bj_x = min(col_b_x, bb_x + col_h_x)
+                    phi_vj_x = phi_j * gamma * math.sqrt(data.fc_prime) * (bj_x * col_h_x) / 1000.0
+
+                    tx1 = 1.25 * data.fy * data.top_bx1_as_top / 1000.0 if data.top_bx1_exists == 'yes' else 0
+                    cx2 = 1.25 * data.fy * data.top_bx2_as_bot / 1000.0 if data.top_bx2_exists == 'yes' else 0
+                    vcol_sw1 = (bx1_mpr_neg + bx2_mpr_pos) / (data.height / 1000.0) if data.height > 0 else 0
+                    vj_sway1 = tx1 + cx2 - vcol_sw1
+
+                    tx2 = 1.25 * data.fy * data.top_bx2_as_top / 1000.0 if data.top_bx2_exists == 'yes' else 0
+                    cx1 = 1.25 * data.fy * data.top_bx1_as_bot / 1000.0 if data.top_bx1_exists == 'yes' else 0
+                    vcol_sw2 = (bx2_mpr_neg + bx1_mpr_pos) / (data.height / 1000.0) if data.height > 0 else 0
+                    vj_sway2 = tx2 + cx1 - vcol_sw2
+
+                    vj_x_u = max(abs(vj_sway1), abs(vj_sway2))
+                    ratio_vj_x = vj_x_u / phi_vj_x if phi_vj_x > 0 else 9.99
+
+                color_vj_x = "#16A34A" if ratio_vj_x <= 1.0 else "#DC2626"
+
+                # Y-Direction Checks
+                ratio_y = sum_mnc_y_dir / sum_mnb_y_dir if sum_mnb_y_dir > 0 else 9.99
+                color_y = "#16A34A" if ratio_y >= 1.2 or sum_mnb_y_dir == 0 else "#DC2626"
+
+                vj_y_u = phi_vj_y = ratio_vj_y = 0.0
+                if data.top_by1_exists == 'yes' or data.top_by2_exists == 'yes':
+                    bb_y = max([data.top_by1_b if data.top_by1_exists == 'yes' else 0,
+                                data.top_by2_b if data.top_by2_exists == 'yes' else 0])
+                    bj_y = min(col_b_y, bb_y + col_h_y)
+                    phi_vj_y = phi_j * gamma * math.sqrt(data.fc_prime) * (bj_y * col_h_y) / 1000.0
+
+                    ty1 = 1.25 * data.fy * data.top_by1_as_top / 1000.0 if data.top_by1_exists == 'yes' else 0
+                    cy2 = 1.25 * data.fy * data.top_by2_as_bot / 1000.0 if data.top_by2_exists == 'yes' else 0
+                    vcol_sw1_y = (by1_mpr_neg + by2_mpr_pos) / (data.height / 1000.0) if data.height > 0 else 0
+                    vj_sway1_y = ty1 + cy2 - vcol_sw1_y
+
+                    ty2 = 1.25 * data.fy * data.top_by2_as_top / 1000.0 if data.top_by2_exists == 'yes' else 0
+                    cy1 = 1.25 * data.fy * data.top_by1_as_bot / 1000.0 if data.top_by1_exists == 'yes' else 0
+                    vcol_sw2_y = (by2_mpr_neg + by1_mpr_pos) / (data.height / 1000.0) if data.height > 0 else 0
+                    vj_sway2_y = ty2 + cy1 - vcol_sw2_y
+
+                    vj_y_u = max(abs(vj_sway1_y), abs(vj_sway2_y))
+                    ratio_vj_y = vj_y_u / phi_vj_y if phi_vj_y > 0 else 9.99
+
+                color_vj_y = "#16A34A" if ratio_vj_y <= 1.0 else "#DC2626"
+
+                # UI Rendering for SC/WB Panel
+                scwb_items = []
+                if sum_mnb_x_dir > 0:
+                    res.design_notes.append(
+                        f"SMF Check: X-Dir SC/WB Ratio = {ratio_x:.2f}, Joint Shear DCR = {ratio_vj_x:.2f}")
+                    scwb_items.append(air.Div(
+                        air.H5("X-Direction Framing", style="margin-bottom: 8px; color: #4b5563; font-size: 15px;"),
+                        air.Ul(
+                            air.Li(air.Strong("Σ Mnc / Σ Mnb: "),
+                                   air.Span(f"{ratio_x:.2f} ≥ 1.2", style=f"color: {color_x}; font-weight: bold;")),
+                            air.Li(air.Strong("Joint Shear (Vu): "), f"{vj_x_u:.1f} kN"),
+                            air.Li(air.Strong("Joint Cap (φVn): "), f"{phi_vj_x:.1f} kN (γ={gamma})"),
+                            air.Li(air.Strong("Joint DCR: "), air.Span(f"{ratio_vj_x:.2f} ≤ 1.0",
+                                                                       style=f"color: {color_vj_x}; font-weight: bold;"))
+                        )
+                    ))
+                else:
+                    scwb_items.append(air.Div(
+                        air.H5("X-Direction Framing", style="margin-bottom: 8px; color: #4b5563; font-size: 15px;"),
+                        air.P("No beams defined.", style="font-size: 13px; color: #6b7280;")))
+
+                if sum_mnb_y_dir > 0:
+                    res.design_notes.append(
+                        f"SMF Check: Y-Dir SC/WB Ratio = {ratio_y:.2f}, Joint Shear DCR = {ratio_vj_y:.2f}")
+                    scwb_items.append(air.Div(
+                        air.H5("Y-Direction Framing", style="margin-bottom: 8px; color: #4b5563; font-size: 15px;"),
+                        air.Ul(
+                            air.Li(air.Strong("Σ Mnc / Σ Mnb: "),
+                                   air.Span(f"{ratio_y:.2f} ≥ 1.2", style=f"color: {color_y}; font-weight: bold;")),
+                            air.Li(air.Strong("Joint Shear (Vu): "), f"{vj_y_u:.1f} kN"),
+                            air.Li(air.Strong("Joint Cap (φVn): "), f"{phi_vj_y:.1f} kN (γ={gamma})"),
+                            air.Li(air.Strong("Joint DCR: "), air.Span(f"{ratio_vj_y:.2f} ≤ 1.0",
+                                                                       style=f"color: {color_vj_y}; font-weight: bold;"))
+                        )
+                    ))
+                else:
+                    scwb_items.append(air.Div(
+                        air.H5("Y-Direction Framing", style="margin-bottom: 8px; color: #4b5563; font-size: 15px;"),
+                        air.P("No beams defined.", style="font-size: 13px; color: #6b7280;")))
+
+                sc_wb_element = air.Div(
+                    air.H4("Seismic Joint Checks (Top Joint)",
+                           style="color: #1e3a8a; margin-top: 16px; margin-bottom: 12px;"),
+                    air.Div(*scwb_items, class_="grid-2"),
+                    style="margin-top: 16px; padding: 12px; background: #f0fdf4; border-radius: 6px; border: 1px dashed #bbf7d0;"
+                )
+
             vol_concrete, area_formwork, total_kg, rebar_rows = calculate_column_qto(col_geom, res)
 
             n_bars = len(res.reinforcement.longitudinal_bars)
             main_bar_str = f"{n_bars}x{res.reinforcement.longitudinal_bars[0]}" if n_bars > 0 else "None"
-            tie_str = f"{res.reinforcement.tie_legs_x}x{res.reinforcement.tie_legs_y} legs {res.reinforcement.tie_bars} @ {res.reinforcement.tie_spacing:.0f} mm"
+
+            db_main = float(res.reinforcement.longitudinal_bars[0].replace('D',
+                                                                           '')) if res.reinforcement.longitudinal_bars else 20.0
+            dt_bar = res.reinforcement.tie_bars
+            dt = float(dt_bar.replace('D', '')) if dt_bar else 10.0
+
+            s_hinge = res.reinforcement.tie_spacing
+            if data.sdc in ["D", "E", "F"] and data.frame_system == "special":
+                s_outside = min(6.0 * db_main, 150.0)
+            else:
+                s_outside = min(16 * db_main, 48 * dt, min(data.width, data.depth))
+            s_outside = max(50.0, math.floor(s_outside / 10.0) * 10.0)
+
+            tie_hinge_str = f"{res.reinforcement.tie_legs_x}x{res.reinforcement.tie_legs_y} legs {dt_bar} @ {s_hinge:.0f} mm"
+            tie_mid_str = f"{res.reinforcement.tie_legs_x}x{res.reinforcement.tie_legs_y} legs {dt_bar} @ {s_outside:.0f} mm"
 
             status_color = "#16A34A" if res.utilization_ratio <= 1.0 else "#DC2626"
 
@@ -596,22 +881,9 @@ def setup_column_routes(app):
             if res.design_notes:
                 list_items = []
                 for note in list(dict.fromkeys(res.design_notes)):
-                    icon = "⚠️ " if any(x in note for x in ["Violation", "CRITICAL", "inadequate"]) else "ℹ️ "
+                    icon = "⚠️ " if any(x in note for x in ["Violation", "CRITICAL", "inadequate", "FAIL"]) else "ℹ️ "
                     list_items.append(air.Li(f"{icon} {note}"))
                 notes_elements.append(air.Ul(*list_items, class_="notes-list"))
-
-            sc_wb_element = ""
-            if data.sdc in ["D", "E", "F"] and data.frame_system == "special":
-                sc_wb_element = air.Div(
-                    air.H4("Calculated Joint Demands", style="color: #1e3a8a; margin-top: 16px;"),
-                    air.Ul(
-                        air.Li(air.Strong("Top Joint: "),
-                               f"Σ Mpr = {sum_mpr_top:.1f} kN-m, Σ Mnb = {sum_mnb_top:.1f} kN-m"),
-                        air.Li(air.Strong("Bot Joint: "),
-                               f"Σ Mpr = {sum_mpr_bot:.1f} kN-m, Σ Mnb = {sum_mnb_bot:.1f} kN-m")
-                    ),
-                    style="margin-top: 16px; padding: 12px; background: #f0fdf4; border-radius: 6px; border: 1px dashed #bbf7d0;"
-                )
 
             report_content = air.Main(
                 air.Div(
@@ -657,8 +929,10 @@ def setup_column_routes(app):
                                 air.Li(air.Strong("Steel Ratio (ρ)"), air.Span(
                                     f"{(res.reinforcement.longitudinal_area / (data.width * data.depth) * 100):.2f}%",
                                     class_="data-value")),
-                                air.Li(air.Strong("Ties / Hoops"), air.Span(tie_str, class_="data-value",
-                                                                            style="color: #db2777; font-weight: bold;")),
+                                air.Li(air.Strong("Ties (Near Top/Bot)"), air.Span(tie_hinge_str, class_="data-value",
+                                                                                   style="color: #db2777; font-weight: bold;")),
+                                air.Li(air.Strong("Ties (Midheight)"),
+                                       air.Span(tie_mid_str, class_="data-value", style="color: #db2777;")),
                             ),
                             sc_wb_element,
                             class_="section-box", style="height: 100%;"
