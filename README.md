@@ -1,3 +1,5 @@
+<img width="1255" height="605" alt="image" src="https://github.com/user-attachments/assets/f7ef35cc-6c66-4160-987c-178014764cc2" />
+
 # 🏗️ ACI 318M-25 RC Design Collection
 
 [![Python Version](https://img.shields.io/badge/python-3.x-blue.svg)](https://python.org)
@@ -33,7 +35,8 @@ Perform serviceability checks, generate reinforcement details, and calculate qua
 ## 🛠️ Tech Stack
 
 * **Language:** [Python](https://www.python.org/)
-* **Web Framework:** [Air](https://airwebframework.org/) 
+* **Web Framework:** [Air](https://airwebframework.org/)
+* **Calculation module:** [ACI 318M-25 library](https://github.com/arisa-chan/aci-318m-25)
 * **Dependency Management:** `uv` (via `uv.lock` & `pyproject.toml`)
 
 ## 💻 Installation & Local Setup
@@ -68,18 +71,18 @@ air run
 ## 📸 Screenshots
 
 <details>
-<summary><b>Click to expand screenshots</b></summary>
+<summary><b>RC beam design module</b></summary>
 <br>
 
-**Beam Design:**
-![Serviceability Checks](img_1.png)
-![Reinforcement Details](img_3.png)
-![Quantity Takeoff](img_4.png)
+<img width="1646" height="5241" alt="rc-design-collection onrender com_beam_design" src="https://github.com/user-attachments/assets/02742173-cc5e-4e18-8925-d41b2f3380c3" />
 
-**Column Design:**
-![Elevation View](img_5.png)
-![Column Details](img_6.png)
-![Column Takeoff](img_7.png)
+</details>
+
+<details>
+<summary><b>RC column design module</b></summary>
+<br>
+
+<img width="1646" height="3913" alt="rc-design-collection onrender com_column_design" src="https://github.com/user-attachments/assets/e1ce6830-79e5-4cea-a110-d5c0f0323b66" />
 
 </details>
 
