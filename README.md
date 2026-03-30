@@ -7,6 +7,7 @@
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Beta Module](https://img.shields.io/badge/Beam_Design-v0.8_Beta-yellow)]()
 [![Beta Module](https://img.shields.io/badge/Column_Design-v0.8_Beta-yellow)]()
+[![Alpha Module](https://img.shields.io/badge/Slab_Design-v0.4_Alpha-yellow)]()
 
 A powerful Python web application built with the Air web framework for designing reinforced concrete members in accordance with **ACI 318M-25** provisions. 
 
@@ -34,11 +35,20 @@ The web application can be accessed at [https://rc-design-collection.onrender.co
   * Includes checks for strong-column, weak-beam (SCWB) and joint shear.
 * **Quantity Takeoff:** Accurately considers hooks, bends, splices, and standard commercial bar lengths for precise material estimation.
 
+### 3. RC Slab Design `(v0.4 Alpha)`
+> [!WARNING]
+> This module is currently in alpha. Refinements are ongoing, so please expect bugs, wrong results, missing features and sudden changes.
+
+* **Detailed Plan Views:** Visual representations of slab reinforcements.
+* **Reinforcement Details & Capacity:** * Automatically checks constructability requirements.
+  * Using finite element analysis (FEA) for more accurate analysis.
+* **Contour Plots:** Deflections, moments, shears in slabs.
+
 ## 🛠️ Tech Stack
 
 * **Language:** [Python](https://www.python.org/)
 * **Web Framework:** [Air](https://airwebframework.org/)
-* **Calculation module:** [ACI 318M-25 library](https://github.com/arisa-chan/aci-318m-25)
+* **Calculation module:** [ACI 318M-25 library](https://github.com/arisa-chan/aci-318m-25) for member designs, [`openseespy`](https://github.com/zhuminjie/OpenSeesPy) for slab analysis, [`matplotlib`](https://matplotlib.org/) for slab contour plot visualization
 * **Dependency Management:** `uv` (via `uv.lock` & `pyproject.toml`)
 
 ## 💻 Installation & Local Setup
@@ -76,7 +86,7 @@ air run
 <summary><b>RC beam design module</b></summary>
 <br>
 
-<img width="1646" height="5241" alt="rc-design-collection onrender com_beam_design" src="https://github.com/user-attachments/assets/02742173-cc5e-4e18-8925-d41b2f3380c3" />
+![570954160-02742173-cc5e-4e18-8925-d41b2f3380c3.png](assets/570954160-02742173-cc5e-4e18-8925-d41b2f3380c3.png)
 
 </details>
 
@@ -84,7 +94,15 @@ air run
 <summary><b>RC column design module</b></summary>
 <br>
 
-<img width="1646" height="3913" alt="rc-design-collection onrender com_column_design" src="https://github.com/user-attachments/assets/e1ce6830-79e5-4cea-a110-d5c0f0323b66" />
+![570954177-e1ce6830-79e5-4cea-a110-d5c0f0323b66.png](assets/570954177-e1ce6830-79e5-4cea-a110-d5c0f0323b66.png)
+
+</details>
+
+<details>
+<summary><b>RC slab design module</b></summary>
+<br>
+
+![127.0.0.1_8001_slab_design.png](assets/127.0.0.1_8001_slab_design.png)
 
 </details>
 
