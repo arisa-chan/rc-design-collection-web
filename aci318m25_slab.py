@@ -1,627 +1,532 @@
 # -*- coding: utf-8 -*-
 
 """
-ACI 318M-25 Slab Design Library
-Building Code Requirements for Structural Concrete - Slab Design
-
-Based on:
-- ACI CODE-318M-25 International System of Units
-- Chapter 8: Two-Way Slab Systems
-- Chapter 9: Flexural Design
-- Chapter 24: Deflection Control
-
-@author: Enhanced by AI Assistant  
-@date: 2024
-@version: 1.0
+ACI 318M-25 Slab Design Library using OpenSeesPy FEA
 """
 
 import math
-from typing import Dict, Tuple, List, Optional, Union
+from typing import Dict, Tuple, List, Optional
 from dataclasses import dataclass
 from enum import Enum
-from aci318m25 import ACI318M25, ConcreteStrengthClass, ReinforcementGrade, MaterialProperties
+from aci318m25 import ACI318M25, MaterialProperties
+
+import numpy as np
+import matplotlib
+
+matplotlib.use('Agg')  # Safe for server-side rendering
+import matplotlib.pyplot as plt
+import io
+import base64
+
+try:
+    import openseespy.opensees as ops
+
+    OPENSEES_AVAILABLE = True
+except ImportError:
+    OPENSEES_AVAILABLE = False
+
+
+class EdgeSupport(Enum):
+    WALL = "wall"
+    BEAM = "beam"
+    COLUMN = "column"
+    NONE = "none"
+
+
+class EdgeContinuity(Enum):
+    CONTINUOUS = "continuous"
+    DISCONTINUOUS = "discontinuous"
+
 
 class SlabType(Enum):
-    """Types of slab systems"""
-    ONE_WAY = "one_way"
-    TWO_WAY_FLAT = "two_way_flat"
-    TWO_WAY_BEAMS = "two_way_with_beams"
-    FLAT_PLATE = "flat_plate"
-    FLAT_SLAB = "flat_slab"
-    WAFFLE_SLAB = "waffle_slab"
+    FEA_MODEL = "fea_model"
 
-class SupportCondition(Enum):
-    """Support conditions for slabs"""
-    SIMPLY_SUPPORTED = "simply_supported"
-    FIXED = "fixed"
-    CONTINUOUS = "continuous"
-    CANTILEVER = "cantilever"
 
 class LoadPattern(Enum):
-    """Load patterns for slab analysis"""
     UNIFORM = "uniform"
-    POINT_LOAD = "point_load"
-    LINE_LOAD = "line_load"
-    PARTIAL_UNIFORM = "partial_uniform"
+
+
+@dataclass
+class EdgeCondition:
+    support: EdgeSupport
+    continuity: EdgeContinuity
+    wall_t: float = 0.0
+    beam_b: float = 0.0
+    beam_h: float = 0.0
+    col_cx: float = 0.0
+    col_cy: float = 0.0
+
 
 @dataclass
 class SlabGeometry:
-    """Slab geometry properties"""
-    length_x: float           # Slab length in x-direction (mm)
-    length_y: float           # Slab length in y-direction (mm)
-    thickness: float          # Slab thickness (mm)
-    cover: float              # Concrete cover (mm)
-    effective_depth_x: float  # Effective depth for x-direction reinforcement (mm)
-    effective_depth_y: float  # Effective depth for y-direction reinforcement (mm)
-    slab_type: SlabType       # Type of slab system
-    support_conditions: Dict[str, SupportCondition]  # Support conditions for each edge
+    length_x: float
+    length_y: float
+    thickness: float
+    cover: float
+    effective_depth_x: float
+    effective_depth_y: float
+    edge_left: EdgeCondition
+    edge_right: EdgeCondition
+    edge_bottom: EdgeCondition
+    edge_top: EdgeCondition
+
 
 @dataclass
 class SlabLoads:
-    """Slab loading conditions"""
-    dead_load: float          # Dead load (kN/m²)
-    live_load: float          # Live load (kN/m²)
-    superimposed_dead: float  # Superimposed dead load (kN/m²)
-    load_pattern: LoadPattern # Load distribution pattern
-    load_factors: Dict[str, float]  # Load factors for combinations
+    self_weight: float
+    superimposed_dead: float
+    live_load: float
+    load_pattern: LoadPattern
+    load_factors: Dict[str, float]
+
 
 @dataclass
 class SlabReinforcement:
-    """Slab reinforcement design"""
-    main_bars_x: str          # Main reinforcement in x-direction
-    main_spacing_x: float     # Spacing of x-direction bars (mm)
-    main_bars_y: str          # Main reinforcement in y-direction
-    main_spacing_y: float     # Spacing of y-direction bars (mm)
-    shrinkage_bars: str       # Shrinkage and temperature reinforcement
-    shrinkage_spacing: float  # Shrinkage reinforcement spacing (mm)
-    top_bars: str             # Top reinforcement over supports
-    top_spacing: float        # Top reinforcement spacing (mm)
+    main_bars_x: str
+    main_spacing_x: float
+    main_bars_y: str
+    main_spacing_y: float
+    shrinkage_bars: str
+    shrinkage_spacing: float
+    top_bars_x: str
+    top_spacing_x: float
+    top_bars_y: str
+    top_spacing_y: float
+
 
 @dataclass
 class SlabMoments:
-    """Slab moment results"""
-    moment_x_positive: float  # Positive moment in x-direction (kN⋅m/m)
-    moment_x_negative: float  # Negative moment in x-direction (kN⋅m/m)
-    moment_y_positive: float  # Positive moment in y-direction (kN⋅m/m)
-    moment_y_negative: float  # Negative moment in y-direction (kN⋅m/m)
-    shear_x: float            # Shear in x-direction (kN/m)
-    shear_y: float            # Shear in y-direction (kN/m)
+    moment_x_positive: float
+    moment_x_negative: float
+    moment_y_positive: float
+    moment_y_negative: float
+
 
 @dataclass
 class SlabAnalysisResult:
-    """Complete slab analysis results"""
+    behavior_type: SlabType
     moments: SlabMoments
     reinforcement: SlabReinforcement
-    deflection: float         # Maximum deflection (mm)
-    crack_width: float        # Maximum crack width (mm)
-    punching_shear_ok: bool   # Punching shear check result
-    utilization_ratio: float # Maximum utilization ratio
-    design_notes: List[str]   # Design notes and warnings
+    deflection: float
+    utilization_ratio: float
+    design_notes: List[str]
+    contours: Dict[str, str] = None  # Holds base64 PNG strings
+
 
 class ACI318M25SlabDesign:
-    """
-    ACI 318M-25 Slab Design Library
-    
-    Comprehensive slab design according to ACI 318M-25:
-    - One-way and two-way slab systems (Chapter 8)
-    - Flexural design (Chapter 9)
-    - Deflection control (Chapter 24)
-    - Punching shear (Chapter 22)
-    - Minimum reinforcement requirements
-    """
-    
+
     def __init__(self):
-        """Initialize slab design calculator"""
         self.aci = ACI318M25()
-        
-        # Strength reduction factors φ - ACI 318M-25 Section 21.2
-        self.phi_factors = {
-            'flexure': 0.90,
-            'shear': 0.75,
-            'bearing': 0.65
-        }
-        
-        # Minimum thickness requirements - ACI 318M-25 Table 7.3.1.1
-        self.min_thickness_ratios = {
-            SlabType.ONE_WAY: {
-                SupportCondition.SIMPLY_SUPPORTED: 20,
-                SupportCondition.FIXED: 28,
-                SupportCondition.CONTINUOUS: 24,
-                SupportCondition.CANTILEVER: 10
-            },
-            SlabType.TWO_WAY_FLAT: {
-                SupportCondition.SIMPLY_SUPPORTED: 30,
-                SupportCondition.FIXED: 36,
-                SupportCondition.CONTINUOUS: 33
-            }
-        }
-        
-        # Deflection limits - ACI 318M-25 Table 24.2.2
-        self.deflection_limits = {
-            'immediate': {
-                'flat_roof': 180,      # L/180
-                'floor': 360,          # L/360
-                'roof_floor': 240      # L/240
-            },
-            'long_term': {
-                'supporting_nonstructural': 480,  # L/480
-                'not_supporting': 240             # L/240
-            }
-        }
-    
-    def calculate_minimum_thickness(self, geometry: SlabGeometry, 
-                                  material_props: MaterialProperties) -> float:
-        """
-        Calculate minimum slab thickness
-        ACI 318M-25 Table 7.3.1.1 and Section 8.3.1
-        
-        Args:
-            geometry: Slab geometric properties
-            material_props: Material properties
-            
-        Returns:
-            Minimum required thickness (mm)
-        """
-        # Get span ratios
-        aspect_ratio = max(geometry.length_x, geometry.length_y) / min(geometry.length_x, geometry.length_y)
-        longer_span = max(geometry.length_x, geometry.length_y)
-        
-        if geometry.slab_type == SlabType.ONE_WAY:
-            # One-way slab thickness
-            support_type = list(geometry.support_conditions.values())[0]
-            ratio = self.min_thickness_ratios[SlabType.ONE_WAY][support_type]
-            h_min = longer_span / ratio
-            
-        elif geometry.slab_type in [SlabType.TWO_WAY_FLAT, SlabType.FLAT_PLATE]:
-            # Two-way slab without beams - ACI 318M-25 Section 8.3.1.1
-            perimeter = 2 * (geometry.length_x + geometry.length_y)
-            ln = longer_span - 200  # Assume 200mm support width
-            
-            # Basic minimum thickness
-            h_min = ln * (0.8 + material_props.fy / 1400) / 36
-            
-            # Minimum absolute thickness
-            h_min = max(h_min, 125)  # 125mm minimum for slabs without beams
-            
-        else:
-            # Two-way slab with beams
-            h_min = longer_span / 36  # Simplified approach
-            h_min = max(h_min, 90)   # 90mm minimum for slabs with beams
-        
-        return h_min
-    
-    def calculate_slab_moments_one_way(self, geometry: SlabGeometry, 
-                                     loads: SlabLoads) -> SlabMoments:
-        """
-        Calculate moments for one-way slabs
-        ACI 318M-25 Chapter 7
-        
-        Args:
-            geometry: Slab geometric properties
-            loads: Loading conditions
-            
-        Returns:
-            Slab moments
-        """
-        # Total factored load
-        wu = (loads.dead_load + loads.superimposed_dead) * loads.load_factors.get('D', 1.4) + \
-             loads.live_load * loads.load_factors.get('L', 1.6)
-        
-        # Convert span to meters for moment calculation
-        span = max(geometry.length_x, geometry.length_y) / 1000  # Convert mm to m
-        
-        # Support conditions
-        support_type = list(geometry.support_conditions.values())[0]
-        
-        if support_type == SupportCondition.SIMPLY_SUPPORTED:
-            moment_positive = wu * span**2 / 8  # kN⋅m/m
-            moment_negative = 0.0
-        elif support_type == SupportCondition.FIXED:
-            moment_positive = wu * span**2 / 24  # kN⋅m/m
-            moment_negative = wu * span**2 / 12  # kN⋅m/m
-        elif support_type == SupportCondition.CONTINUOUS:
-            moment_positive = wu * span**2 / 16  # kN⋅m/m
-            moment_negative = wu * span**2 / 12  # kN⋅m/m
-        else:  # Cantilever
-            moment_positive = 0.0
-            moment_negative = wu * span**2 / 2  # kN⋅m/m
-        
-        return SlabMoments(
-            moment_x_positive=moment_positive,
-            moment_x_negative=moment_negative,
-            moment_y_positive=0.0,  # No moment in y-direction for one-way
-            moment_y_negative=0.0,
-            shear_x=wu * span / 2,  # kN/m (wu in kN/m², span in m → kN/m)
-            shear_y=0.0
-        )
-    
-    def calculate_slab_moments_two_way(self, geometry: SlabGeometry,
-                                     loads: SlabLoads) -> SlabMoments:
-        """
-        Calculate moments for two-way slabs using Direct Design Method approximations
-        ACI 318M-25 Section 8.10
-        
-        Note: This calculates the governing (column strip) moments per meter width
-        to ensure the most critical sections are safely reinforced.
-        """
-        # Total factored load (wu) in kN/m²
-        wu = (loads.dead_load + loads.superimposed_dead) * loads.load_factors.get('D', 1.4) + \
-             loads.live_load * loads.load_factors.get('L', 1.6)
-        
-        # Convert dimensions to meters
-        lx = geometry.length_x / 1000
-        ly = geometry.length_y / 1000
-        
-        # Assume standard 300mm column/support widths for clear span calculation (ln)
-        # ACI 318 limits clear span to not less than 65% of center-to-center span
-        ln_x = max(lx - 0.300, 0.65 * lx)
-        ln_y = max(ly - 0.300, 0.65 * ly)
-        
-        # Total static moment in each direction (Mo) - ACI 318M-25 Eq. (8.10.3.2)
-        # Mo = wu * l2 * ln^2 / 8
-        Mo_x = wu * ly * (ln_x ** 2) / 8  # Design span is x, transverse width is y
-        Mo_y = wu * lx * (ln_y ** 2) / 8  # Design span is y, transverse width is x
-        
-        # Distribution factors for interior vs exterior spans (Simplified)
-        # If any support is simply supported, treat as an exterior panel without edge beams
-        supports = list(geometry.support_conditions.values())
-        if SupportCondition.SIMPLY_SUPPORTED in supports:
-            # Exterior panel approximation
-            neg_factor = 0.70  # Interior negative
-            pos_factor = 0.52  # Positive
-        else:
-            # Interior panel - ACI 318M-25 Sec 8.10.4.1
-            neg_factor = 0.65
-            pos_factor = 0.35
-            
-        # Total positive and negative moments per panel
-        M_neg_x_total = neg_factor * Mo_x
-        M_pos_x_total = pos_factor * Mo_x
-        
-        M_neg_y_total = neg_factor * Mo_y
-        M_pos_y_total = pos_factor * Mo_y
-        
-        # Convert to critical moments per meter width (Column Strip)
-        # Column strip width is 0.5 * min(lx, ly) per ACI 318
-        cs_width = 0.5 * min(lx, ly)
-        
-        # ACI 318 Sec 8.10.5: Column strips take ~75% of negative moment and ~60% of positive moment
-        moment_x_negative = (0.75 * M_neg_x_total) / cs_width
-        moment_x_positive = (0.60 * M_pos_x_total) / cs_width
-        
-        moment_y_negative = (0.75 * M_neg_y_total) / cs_width
-        moment_y_positive = (0.60 * M_pos_y_total) / cs_width
-        
-        # Shear forces per meter width (governing edge)
-        # Uses clear span for critical shear calculations
-        shear_x = wu * ln_x / 2
-        shear_y = wu * ln_y / 2
-        
-        return SlabMoments(
-            moment_x_positive=moment_x_positive,
-            moment_x_negative=moment_x_negative,
-            moment_y_positive=moment_y_positive,
-            moment_y_negative=moment_y_negative,
-            shear_x=shear_x,
-            shear_y=shear_y
-        )
-    
-    def design_flexural_reinforcement(self, moment: float, width: float,
-                                      effective_depth: float, thickness: float, cover: float,
-                                      material_props: MaterialProperties) -> Tuple[str, float]:
-        """Design flexural reinforcement for slab"""
-        fc_prime = material_props.fc_prime
-        fy = material_props.fy
-        b = width
-        d = effective_depth
-        
+        self.phi_factors = {'flexure': 0.90, 'shear': 0.75}
+
+    def _run_opensees_analysis(self, geom: SlabGeometry, mat_props: MaterialProperties, load_mpa: float,
+                               is_service: bool = False) -> Tuple[SlabMoments, float, List[str], dict]:
+        notes = []
+        if not OPENSEES_AVAILABLE:
+            raise ImportError("OpenSeesPy is required. Run `pip install openseespy`.")
+
+        ops.wipe()
+        ops.model('basic', '-ndm', 3, '-ndf', 6)
+
+        Ec = mat_props.ec
+        nu = 0.2
+        h = geom.thickness
+
+        mod_slab = 1.0 if is_service else 0.25
+        mod_beam = 1.0 if is_service else 0.35
+
+        if not is_service:
+            notes.append(f"ACI 318 Section properties (cracked): Slabs = {mod_slab} Ig, Beams = {mod_beam} Ig.")
+            notes.append("Note: Walls (0.35 Ig) and Columns (0.70 Ig) are idealized as rigid boundary constraints.")
+
+        Ec_slab = Ec * mod_slab
+        ops.nDMaterial('ElasticIsotropic', 1, Ec_slab, nu)
+        ops.section('ElasticMembranePlateSection', 1, Ec_slab, nu, h, 0.0)
+
+        nx, ny = 12, 12
+        dx, dy = geom.length_x / nx, geom.length_y / ny
+
+        # Generate Nodes
+        for i in range(nx + 1):
+            for j in range(ny + 1):
+                nodeTag = i * (ny + 1) + j + 1
+                ops.node(nodeTag, i * dx, j * dy, 0.0)
+
+        # Generate Shell Elements
+        eleTag = 1
+        for i in range(nx):
+            for j in range(ny):
+                n1 = i * (ny + 1) + j + 1
+                n2 = (i + 1) * (ny + 1) + j + 1
+                n3 = (i + 1) * (ny + 1) + (j + 1) + 1
+                n4 = i * (ny + 1) + (j + 1) + 1
+                ops.element('ShellMITC4', eleTag, n1, n2, n3, n4, 1)
+                eleTag += 1
+
+        # Beams
+        ops.geomTransf('Linear', 1, 0.0, 1.0, 0.0)
+        ops.geomTransf('Linear', 2, -1.0, 0.0, 0.0)
+
+        beam_eleTag = 100000
+
+        def add_beam_elements(node_list, b, depth, is_x_dir):
+            nonlocal beam_eleTag
+            if b <= 0 or depth <= 0: return
+            A = b * depth
+            Iz = mod_beam * (b * depth ** 3) / 12.0
+            Iy = mod_beam * (depth * b ** 3) / 12.0
+            a_dim, c_dim = max(b, depth), min(b, depth)
+            J_gross = a_dim * c_dim ** 3 * (
+                        1.0 / 3.0 - 0.21 * (c_dim / a_dim) * (1.0 - (c_dim ** 4) / (12.0 * a_dim ** 4)))
+            J = mod_beam * J_gross
+            G = Ec / (2.0 * (1.0 + nu))
+            transfTag = 1 if is_x_dir else 2
+            for idx in range(len(node_list) - 1):
+                ops.element('elasticBeamColumn', beam_eleTag, node_list[idx], node_list[idx + 1], A, Ec, G, J, Iy, Iz,
+                            transfTag)
+                beam_eleTag += 1
+
+        edge_left_nodes = [j + 1 for j in range(ny + 1)]
+        edge_right_nodes = [nx * (ny + 1) + j + 1 for j in range(ny + 1)]
+        edge_bot_nodes = [i * (ny + 1) + 1 for i in range(nx + 1)]
+        edge_top_nodes = [i * (ny + 1) + ny + 1 for i in range(nx + 1)]
+
+        if geom.edge_bottom.support == EdgeSupport.BEAM: add_beam_elements(edge_bot_nodes, geom.edge_bottom.beam_b,
+                                                                           geom.edge_bottom.beam_h, True)
+        if geom.edge_top.support == EdgeSupport.BEAM: add_beam_elements(edge_top_nodes, geom.edge_top.beam_b,
+                                                                        geom.edge_top.beam_h, True)
+        if geom.edge_left.support == EdgeSupport.BEAM: add_beam_elements(edge_left_nodes, geom.edge_left.beam_b,
+                                                                         geom.edge_left.beam_h, False)
+        if geom.edge_right.support == EdgeSupport.BEAM: add_beam_elements(edge_right_nodes, geom.edge_right.beam_b,
+                                                                          geom.edge_right.beam_h, False)
+
+        # Boundary Conditions
+        node_constraints = {i: [0, 0, 0, 0, 0, 0] for i in range(1, (nx + 1) * (ny + 1) + 1)}
+
+        def apply_edge_bcs(node_list, condition, is_x_edge):
+            for n in node_list:
+                if condition.support == EdgeSupport.WALL: node_constraints[n][2] = 1
+                if condition.continuity == EdgeContinuity.CONTINUOUS:
+                    if not is_x_edge: node_constraints[n][3] = 1
+                    if is_x_edge: node_constraints[n][4] = 1
+
+        apply_edge_bcs(edge_left_nodes, geom.edge_left, True)
+        apply_edge_bcs(edge_right_nodes, geom.edge_right, True)
+        apply_edge_bcs(edge_bot_nodes, geom.edge_bottom, False)
+        apply_edge_bcs(edge_top_nodes, geom.edge_top, False)
+
+        supported_types = [EdgeSupport.WALL, EdgeSupport.BEAM, EdgeSupport.COLUMN]
+        if geom.edge_left.support in supported_types or geom.edge_bottom.support in supported_types:
+            node_constraints[1][2] = 1
+        if geom.edge_left.support in supported_types or geom.edge_top.support in supported_types:
+            node_constraints[ny + 1][2] = 1
+        if geom.edge_right.support in supported_types or geom.edge_bottom.support in supported_types:
+            node_constraints[nx * (ny + 1) + 1][2] = 1
+        if geom.edge_right.support in supported_types or geom.edge_top.support in supported_types:
+            node_constraints[(nx + 1) * (ny + 1)][2] = 1
+
+        node_constraints[1][0] = 1
+        node_constraints[1][1] = 1
+        node_constraints[1][5] = 1
+
+        for n, dofs in node_constraints.items():
+            if any(dofs): ops.fix(n, *dofs)
+
+        # Loads & Analysis
+        ops.timeSeries('Linear', 1)
+        ops.pattern('Plain', 1, 1)
+        for i in range(nx + 1):
+            for j in range(ny + 1):
+                nTag = i * (ny + 1) + j + 1
+                ax = dx if (0 < i < nx) else dx / 2.0
+                ay = dy if (0 < j < ny) else dy / 2.0
+                ops.load(nTag, 0.0, 0.0, -load_mpa * (ax * ay), 0.0, 0.0, 0.0)
+
+        ops.system('BandSPD')
+        ops.numberer('RCM')
+        ops.constraints('Plain')
+        ops.integrator('LoadControl', 1.0)
+        ops.algorithm('Linear')
+        ops.analysis('Static')
+        if ops.analyze(1) != 0: raise Exception("OpenSees FEA Model failed to converge.")
+
+        # Post-Processing Grids
+        W = np.zeros((nx + 1, ny + 1))
+        MXX = np.zeros((nx + 1, ny + 1))
+        MYY = np.zeros((nx + 1, ny + 1))
+        MXY = np.zeros((nx + 1, ny + 1))
+        MX_WA = np.zeros((nx + 1, ny + 1))
+        MY_WA = np.zeros((nx + 1, ny + 1))
+
+        m_x_pos, m_x_neg, m_y_pos, m_y_neg = 0.0, 0.0, 0.0, 0.0
+        D = mod_slab * (Ec * h ** 3) / (12.0 * (1.0 - nu ** 2))
+
+        def get_w(xi, yj):
+            return ops.nodeDisp(xi * (ny + 1) + yj + 1, 3)
+
+        def dw_dy(xi, yj):
+            if yj == 0: return (get_w(xi, 1) - get_w(xi, 0)) / dy
+            if yj == ny: return (get_w(xi, ny) - get_w(xi, ny - 1)) / dy
+            return (get_w(xi, yj + 1) - get_w(xi, yj - 1)) / (2 * dy)
+
+        for i in range(nx + 1):
+            for j in range(ny + 1):
+                n_c = i * (ny + 1) + j + 1
+                wc = ops.nodeDisp(n_c, 3)
+                W[i, j] = wc
+
+                # X-direction curvature components
+                if i == 0:
+                    wr = ops.nodeDisp(1 * (ny + 1) + j + 1, 3)
+                    wl = wr if geom.edge_left.continuity == EdgeContinuity.CONTINUOUS else (2 * wc - wr)
+                elif i == nx:
+                    wl = ops.nodeDisp((nx - 1) * (ny + 1) + j + 1, 3)
+                    wr = wl if geom.edge_right.continuity == EdgeContinuity.CONTINUOUS else (2 * wc - wl)
+                else:
+                    wl = ops.nodeDisp((i - 1) * (ny + 1) + j + 1, 3)
+                    wr = ops.nodeDisp((i + 1) * (ny + 1) + j + 1, 3)
+
+                # Y-direction curvature components
+                if j == 0:
+                    wt = ops.nodeDisp(i * (ny + 1) + 1 + 1, 3)
+                    wb = wt if geom.edge_bottom.continuity == EdgeContinuity.CONTINUOUS else (2 * wc - wt)
+                elif j == ny:
+                    wb = ops.nodeDisp(i * (ny + 1) + (ny - 1) + 1, 3)
+                    wt = wb if geom.edge_top.continuity == EdgeContinuity.CONTINUOUS else (2 * wc - wb)
+                else:
+                    wb = ops.nodeDisp(i * (ny + 1) + (j - 1) + 1, 3)
+                    wt = ops.nodeDisp(i * (ny + 1) + (j + 1) + 1, 3)
+
+                d2w_dx2 = (wl - 2 * wc + wr) / (dx ** 2)
+                d2w_dy2 = (wb - 2 * wc + wt) / (dy ** 2)
+
+                if i == 0:
+                    w_xy = (dw_dy(1, j) - dw_dy(0, j)) / dx
+                elif i == nx:
+                    w_xy = (dw_dy(nx, j) - dw_dy(nx - 1, j)) / dx
+                else:
+                    w_xy = (dw_dy(i + 1, j) - dw_dy(i - 1, j)) / (2 * dx)
+
+                mxx = D * (d2w_dx2 + nu * d2w_dy2) * 0.001
+                myy = D * (d2w_dy2 + nu * d2w_dx2) * 0.001
+                mxy = D * (1.0 - nu) * w_xy * 0.001
+
+                MXX[i, j] = mxx
+                MYY[i, j] = myy
+                MXY[i, j] = mxy
+
+                mx_bot, my_bot = mxx + abs(mxy), myy + abs(mxy)
+                if myy < -abs(mxy) and myy != 0: mx_bot, my_bot = mxx + abs(mxy ** 2 / myy), 0.0
+                if mxx < -abs(mxy) and mxx != 0: my_bot, mx_bot = myy + abs(mxy ** 2 / mxx), 0.0
+
+                mx_top, my_top = mxx - abs(mxy), myy - abs(mxy)
+                if myy > abs(mxy) and myy != 0: mx_top, my_top = mxx - abs(mxy ** 2 / myy), 0.0
+                if mxx > abs(mxy) and mxx != 0: my_top, mx_top = myy - abs(mxy ** 2 / mxx), 0.0
+
+                MX_WA[i, j] = mx_bot
+                MY_WA[i, j] = my_bot
+
+                if mx_bot > 0: m_x_pos = max(m_x_pos, mx_bot)
+                if my_bot > 0: m_y_pos = max(m_y_pos, my_bot)
+                if mx_top < 0: m_x_neg = max(m_x_neg, abs(mx_top))
+                if my_top < 0: m_y_neg = max(m_y_neg, abs(my_top))
+
+        # Compute Shears via Finite Difference of Moments
+        VX = np.zeros((nx + 1, ny + 1))
+        VY = np.zeros((nx + 1, ny + 1))
+
+        # FIX: Convert mesh step size from mm to meters for the derivative
+        dx_m = dx / 1000.0
+        dy_m = dy / 1000.0
+
+        for i in range(nx + 1):
+            for j in range(ny + 1):
+                dMxx_dx = (MXX[min(i + 1, nx), j] - MXX[max(i - 1, 0), j]) / (
+                    dx_m if i == 0 or i == nx else 2 * dx_m)
+                dMxy_dy = (MXY[i, min(j + 1, ny)] - MXY[i, max(j - 1, 0)]) / (
+                    dy_m if j == 0 or j == ny else 2 * dy_m)
+                VX[i, j] = dMxx_dx + dMxy_dy
+
+                dMyy_dy = (MYY[i, min(j + 1, ny)] - MYY[i, max(j - 1, 0)]) / (
+                    dy_m if j == 0 or j == ny else 2 * dy_m)
+                dMxy_dx = (MXY[min(i + 1, nx), j] - MXY[max(i - 1, 0), j]) / (
+                    dx_m if i == 0 or i == nx else 2 * dx_m)
+                VY[i, j] = dMyy_dy + dMxy_dx
+
+        max_def = np.max(np.abs(W))
+        grid_data = {'W': W, 'MXX': MXX, 'MYY': MYY, 'MXY': MXY, 'MX_WA': MX_WA, 'MY_WA': MY_WA, 'VX': VX, 'VY': VY}
+
+        if not is_service:
+            notes.append("Moments adjusted using Wood-Armer equations to account for Mxy (twisting).")
+            if beam_eleTag > 100000:
+                notes.append("Actual 3D beam stiffness (elasticBeamColumn) utilized for 'Beam' supported edges.")
+
+        return SlabMoments(m_x_pos, m_x_neg, m_y_pos, m_y_neg), max_def, notes, grid_data
+
+    def generate_contour_plots(self, geom: SlabGeometry, grid_data: dict) -> Dict[str, str]:
+        """Generates matplotlib contour plots and returns base64 strings."""
+        x_lin = np.linspace(0, geom.length_x, grid_data['W'].shape[0])
+        y_lin = np.linspace(0, geom.length_y, grid_data['W'].shape[1])
+        X, Y = np.meshgrid(x_lin, y_lin, indexing='ij')
+
+        plots = {}
+        configs = [
+            ('deflection', 'W', 'Deflection (mm)', 'viridis'),
+            ('mxx', 'MXX', 'Mxx Bending (kN-m/m)', 'RdBu_r'),
+            ('myy', 'MYY', 'Myy Bending (kN-m/m)', 'RdBu_r'),
+            ('mxy', 'MXY', 'Mxy Twisting (kN-m/m)', 'PiYG'),
+            ('mx_wa', 'MX_WA', 'Wood-Armer Mx Bot (kN-m/m)', 'Reds'),
+            ('my_wa', 'MY_WA', 'Wood-Armer My Bot (kN-m/m)', 'Reds'),
+            ('vx', 'VX', 'Shear Vx (kN/m)', 'coolwarm'),
+            ('vy', 'VY', 'Shear Vy (kN/m)', 'coolwarm'),
+        ]
+
+        for key, grid_key, title, cmap in configs:
+            Z = grid_data[grid_key]
+            if key == 'deflection': Z = np.abs(Z)  # Show downward as positive for clarity
+
+            plt.figure(figsize=(5, 4.5))
+            cs = plt.contourf(X, Y, Z, levels=20, cmap=cmap)
+            plt.colorbar(cs)
+            plt.title(title, fontsize=12, fontweight='bold', color='#111827')
+            plt.xlabel("X (mm)")
+            plt.ylabel("Y (mm)")
+            plt.tight_layout()
+
+            buf = io.BytesIO()
+            plt.savefig(buf, format='png', dpi=120)
+            plt.close()
+            buf.seek(0)
+            plots[key] = base64.b64encode(buf.read()).decode('utf-8')
+
+        return plots
+
+    def design_flexural_reinforcement(self, moment: float, effective_depth: float, thickness: float,
+                                      material_props: MaterialProperties, notes: List[str], label: str) -> Tuple[
+        str, float]:
+        fc_prime, fy = material_props.fc_prime, material_props.fy
+        width = 1000.0
         Mu = moment * 1e6
-        
-        if Mu <= 0:
-            return self._design_minimum_reinforcement(b, thickness, fy, cover)
-        
+
+        rho_temp = 0.0020 if fy <= 420 else (0.0018 if fy <= 520 else 0.0018 * 420.0 / fy)
+        As_min = rho_temp * width * thickness
+
+        if Mu <= 0: return self._select_slab_reinforcement(As_min, width, fy, thickness)
+
         phi = self.phi_factors['flexure']
-        
-        A = phi * fy**2 / (2 * 0.85 * fc_prime * b)
-        B = -phi * fy * d  
-        C = Mu             
-        
-        discriminant = B**2 - 4*A*C
+        A = phi * fy ** 2 / (2 * 0.85 * fc_prime * width)
+        B = -phi * fy * effective_depth
+        C = Mu
+
+        discriminant = B ** 2 - 4 * A * C
         if discriminant < 0:
-            raise ValueError("Section inadequate for applied moment")
-        
-        As_required = (-B - math.sqrt(discriminant)) / (2*A)
-        
-        # Updated call to pass 'thickness' instead of 'effective_depth'
-        As_min = self._calculate_minimum_slab_reinforcement(b, thickness, fy)
-        As_required = max(As_required, As_min)
-        
-        As_max = 0.025 * b * d
-        if As_required > As_max:
-            raise ValueError("Required reinforcement exceeds practical maximum")
-        
-        return self._select_slab_reinforcement(As_required, b, fy, thickness, cover)
-    
-    def _design_minimum_reinforcement(self, width: float, thickness: float,
-                                      fy: float, cover: float) -> Tuple[str, float]:
-        """Design minimum reinforcement for slabs"""
-        if fy <= 420:
-            rho_min = 0.0020
-        elif fy <= 520:
-            rho_min = 0.0018
+            notes.append(
+                f"CRITICAL: {label} section is inadequate for applied moment ({moment:.1f} kN·m/m). Increase slab thickness.")
+            As_required = -B / (2 * A)
         else:
-            rho_min = 0.0018 * 420 / fy
-        
-        As_min = rho_min * width * thickness
-        return self._select_slab_reinforcement(As_min, width, fy, thickness, cover)
-    
-    def _calculate_minimum_slab_reinforcement(self, width: float, 
-                                            thickness: float,
-                                            fy: float) -> float:
-        """Calculate minimum flexural reinforcement for slabs (shrinkage and temperature limit)"""
-        # Minimum shrinkage and temperature reinforcement per ACI 318M-25 Section 24.4
-        if fy <= 420:
-            rho_temp = 0.0020
-        elif fy <= 520:
-            rho_temp = 0.0018
-        else:
-            rho_temp = 0.0018 * 420.0 / fy
-        
-        # For slabs, minimum flexural reinforcement is governed by gross area
-        As_min_temp = rho_temp * width * thickness
-        
-        return As_min_temp
-    
-    def _select_slab_reinforcement(self, As_required: float, width: float,
-                                   fy: float, thickness: float, cover: float,
-                                   aggregate_size: float = 25.0) -> Tuple[str, float]:
-        """Select appropriate bar size and spacing for slab considering ACI 318M-25 limits"""
-        # Common slab bar sizes
-        bar_sizes = ['D10', 'D12', 'D16', 'D20']
-        
-        # Calculate maximum spacing for crack control (ACI 318M-25 Sec. 24.3.2)
-        fs = (2.0 / 3.0) * fy
-        s_limit_1 = 380 * (280 / fs) - 2.5 * cover
-        s_limit_2 = 300 * (280 / fs)
-        max_crack_spacing = min(s_limit_1, s_limit_2)
-        
-        # General slab maximum spacing limit (ACI 318M-25 Sec. 7.7.2.3 / 8.7.2.2)
-        max_general_spacing = min(3 * thickness, 450.0)
-        
-        # Governing maximum spacing
-        max_spacing = min(max_crack_spacing, max_general_spacing)
-        
+            As_required = max((-B - math.sqrt(discriminant)) / (2 * A), As_min)
+
+        return self._select_slab_reinforcement(As_required, width, fy, thickness)
+
+    def _select_slab_reinforcement(self, As_required: float, width: float, fy: float, thickness: float) -> Tuple[
+        str, float]:
+        bar_sizes = ['D10', 'D12', 'D16', 'D20', 'D25']
+        max_spacing = min(3 * thickness, 450.0)
         for bar_size in bar_sizes:
             bar_area = self.aci.get_bar_area(bar_size)
-            db = self.aci.get_bar_diameter(bar_size)
-            
-            # Theoretical required spacing to meet area
             spacing = bar_area * width / As_required
-            
-            # Minimum clear spacing (ACI 318M-25 Sec. 25.2.1)
-            min_clear_spacing = max(25.0, db, (4.0/3.0) * aggregate_size)
-            min_c2c_spacing = min_clear_spacing + db
-            
-            if min_c2c_spacing <= spacing <= max_spacing:
-                return bar_size, spacing
-        
-        # If no suitable single size fits perfectly, use smallest bar with maximum allowable spacing
-        bar_size = 'D10'
-        bar_area = self.aci.get_bar_area(bar_size)
-        spacing = min(max_spacing, bar_area * width / As_required)
-        
-        return bar_size, spacing
-    
-    def check_punching_shear(self, geometry: SlabGeometry,
-                           material_props: MaterialProperties,
-                           column_dimensions: Tuple[float, float],
-                           punching_force: float) -> Tuple[bool, float]:
-        """Check punching shear around columns - ACI 318M-25 Section 22.6"""
-        fc_prime = material_props.fc_prime
-        d = min(geometry.effective_depth_x, geometry.effective_depth_y)
-        
-        col_width, col_depth = column_dimensions
-        
-        # Calculate true beta for rectangular columns
-        col_max = max(col_width, col_depth)
-        col_min = min(col_width, col_depth)
-        beta = col_max / col_min if col_min > 0 else 1.0
-        
-        bo = 2 * (col_width + d) + 2 * (col_depth + d)
-        
-        # Equation 1: Basic punching shear (Now using true beta)
-        vc1 = 0.17 * (1 + 2/beta) * math.sqrt(fc_prime)
-        
-        # Equation 2: Based on column location (Assuming interior alphas = 40)
-        alphas = 40  
-        vc2 = 0.083 * (alphas * d / bo + 2) * math.sqrt(fc_prime)
-        
-        # Equation 3: Maximum punching shear
-        vc3 = 0.33 * math.sqrt(fc_prime)
-        
-        vc = min(vc1, vc2, vc3)
-        Vn = vc * bo * d / 1000  # Convert to kN
-        
-        phi = self.phi_factors['shear']
-        phi_Vn = phi * Vn
-        
-        is_adequate = punching_force <= phi_Vn
-        utilization_ratio = punching_force / phi_Vn if phi_Vn > 0 else float('inf')
-        
-        return is_adequate, utilization_ratio
-    
-    def calculate_deflection(self, geometry: SlabGeometry,
-                           material_props: MaterialProperties,
-                           service_loads: SlabLoads,
-                           reinforcement_x: float,
-                           reinforcement_y: float) -> float:
-        """Calculate slab deflection - ACI 318M-25 Chapter 24"""
-        w_service = service_loads.dead_load + service_loads.superimposed_dead + service_loads.live_load
-        
-        # Convert load from kN/m² to N/mm for a 1000mm strip width
-        w_service_n_mm = w_service / 1000.0  
-        
-        Ec = material_props.ec
-        fc_prime = material_props.fc_prime
-        h = geometry.thickness
-        lx_mm = min(geometry.length_x, geometry.length_y)
-        lx_m = lx_mm / 1000.0
-        
-        # Enforce consistent 1000 mm strip width
-        b = 1000.0
-        Ig = (b * h**3) / 12.0
-        fr = 0.62 * math.sqrt(fc_prime)
-        
-        # Cracking moment in N⋅mm
-        Mcr_n_mm = fr * Ig / (h / 2.0) 
-        
-        # Service moment calculation (yields kN⋅m, convert to N⋅mm)
-        if geometry.slab_type == SlabType.ONE_WAY:
-            M_service_kn_m = w_service * (lx_m**2) / 8.0
+            db = self.aci.get_bar_diameter(bar_size)
+            if (max(25.0, db) + db) <= spacing <= max_spacing:
+                return bar_size, math.floor(spacing / 10.0) * 10.0
+        if As_required > (self.aci.get_bar_area('D10') * width / max_spacing):
+            bar = 'D25'
+            spacing = self.aci.get_bar_area(bar) * width / As_required
+            return bar, max(40.0, math.floor(spacing / 10.0) * 10.0)
         else:
-            M_service_kn_m = w_service * (lx_m**2) / 16.0
-            
-        M_service_n_mm = M_service_kn_m * 1e6
-        
-        n = 200000.0 / Ec
-        As = max(reinforcement_x, reinforcement_y)
-        d = geometry.effective_depth_x
-        rho = As / (b * d)
-        
-        k = math.sqrt(2 * rho * n + (rho * n)**2) - rho * n
-        Icr = (b * k**3 * d**3) / 3.0 + n * As * (d * (1.0 - k))**2
-        
-        if M_service_n_mm <= Mcr_n_mm:
-            Ie = Ig
-        else:
-            Ie = (Mcr_n_mm / M_service_n_mm)**3 * Ig + (1.0 - (Mcr_n_mm / M_service_n_mm)**3) * Icr
-            Ie = max(Ie, Icr)
-        
-        # Deflection using consistent N, mm, MPa units
-        if geometry.slab_type == SlabType.ONE_WAY:
-            deflection = 5.0 * w_service_n_mm * (lx_mm**4) / (384.0 * Ec * Ie)
-        else:
-            alpha = 0.001 
-            deflection = alpha * w_service_n_mm * (lx_mm**4) / (Ec * Ie)
-        
-        return deflection
-    
-    def perform_complete_slab_design(self, geometry: SlabGeometry,
-                                   loads: SlabLoads,
-                                   material_props: MaterialProperties,
-                                   column_size: Tuple[float, float] = None) -> SlabAnalysisResult:
-        """
-        Perform complete slab design analysis
-        
-        Args:
-            geometry: Slab geometric properties
-            loads: Loading conditions
-            material_props: Material properties
-            column_size: Column dimensions for punching shear check
-            
-        Returns:
-            Complete slab analysis results
-        """
+            return 'D10', math.floor(max_spacing / 10.0) * 10.0
+
+    def calculate_cracked_deflection(self, gross_def_grid: np.ndarray, moments: SlabMoments, geometry: SlabGeometry,
+                                     mat_props: MaterialProperties) -> Tuple[float, np.ndarray]:
+        Ig = (1000.0 * geometry.thickness ** 3) / 12.0
+        Mcr = (0.62 * math.sqrt(mat_props.fc_prime)) * Ig / (geometry.thickness / 2.0)
+        Ma = max(moments.moment_x_positive, moments.moment_y_positive, moments.moment_x_negative,
+                 moments.moment_y_negative) * 1e6
+
+        if Ma <= Mcr: return np.max(np.abs(gross_def_grid)), gross_def_grid
+
+        rho = self._calculate_minimum_slab_reinforcement(1000, geometry.thickness, mat_props.fy) / (
+                    1000.0 * geometry.effective_depth_x)
+        n = 200000.0 / mat_props.ec
+        k = math.sqrt(2 * rho * n + (rho * n) ** 2) - rho * n
+        Icr = (1000.0 * k ** 3 * geometry.effective_depth_x ** 3) / 3.0 + n * (
+                    rho * 1000 * geometry.effective_depth_x) * (geometry.effective_depth_x * (1.0 - k)) ** 2
+
+        Ie = max(Icr, (Mcr / Ma) ** 3 * Ig + (1.0 - (Mcr / Ma) ** 3) * Icr)
+
+        cracked_grid = gross_def_grid * (Ig / Ie)
+        return np.max(np.abs(cracked_grid)), cracked_grid
+
+    def _calculate_minimum_slab_reinforcement(self, width: float, thickness: float, fy: float) -> float:
+        rho_temp = 0.0020 if fy <= 420 else 0.0018
+        return rho_temp * width * thickness
+
+    def perform_complete_slab_design(self, geometry: SlabGeometry, loads: SlabLoads,
+                                     material_props: MaterialProperties) -> SlabAnalysisResult:
         design_notes = []
-        
-        # Check minimum thickness
-        h_min = self.calculate_minimum_thickness(geometry, material_props)
-        if geometry.thickness < h_min:
-            design_notes.append(f"Increase thickness to minimum {h_min:.0f}mm")
-        
-        # Calculate moments
-        if geometry.slab_type == SlabType.ONE_WAY:
-            moments = self.calculate_slab_moments_one_way(geometry, loads)
-        else:
-            moments = self.calculate_slab_moments_two_way(geometry, loads)
-        
-        # Design reinforcement
-        bar_x, spacing_x = self.design_flexural_reinforcement(
-            moments.moment_x_positive, 1000, geometry.effective_depth_x, geometry.thickness, geometry.cover, material_props
-        )
-        
-        bar_y, spacing_y = self.design_flexural_reinforcement(
-            moments.moment_y_positive, 1000, geometry.effective_depth_y, geometry.thickness, geometry.cover, material_props
-        )
-        
-        # Top reinforcement for negative moments
-        if moments.moment_x_negative > 0:
-            bar_top, spacing_top = self.design_flexural_reinforcement(
-                moments.moment_x_negative, 1000, geometry.effective_depth_x, geometry.thickness, geometry.cover, material_props
-            )
-        else:
-            bar_top, spacing_top = self._design_minimum_reinforcement(
-                1000, geometry.thickness, material_props.fy, geometry.cover
-            )
-        
-        # Shrinkage and temperature reinforcement
-        bar_shrink, spacing_shrink = self._design_minimum_reinforcement(
-            1000, geometry.thickness, material_props.fy, geometry.cover
-        )
-        
-        # Calculate reinforcement areas
-        As_x = self.aci.get_bar_area(bar_x) * 1000 / spacing_x
-        As_y = self.aci.get_bar_area(bar_y) * 1000 / spacing_y
-        
-        # Deflection calculation
-        service_loads = SlabLoads(
-            dead_load=loads.dead_load,
-            live_load=loads.live_load,
-            superimposed_dead=loads.superimposed_dead,
-            load_pattern=loads.load_pattern,
-            load_factors={'D': 1.0, 'L': 1.0}  # Service load factors
-        )
-        
-        deflection = self.calculate_deflection(
-            geometry, material_props, service_loads, As_x, As_y
-        )
-        
-        # Check deflection limits
-        span = max(geometry.length_x, geometry.length_y)
-        deflection_limit = span / self.deflection_limits['immediate']['floor']
-        
-        if deflection > deflection_limit:
-            design_notes.append(f"Deflection {deflection:.1f}mm exceeds limit {deflection_limit:.1f}mm")
-        
-        # Punching shear check
-        punching_shear_ok = True
-        if column_size and geometry.slab_type in [SlabType.FLAT_PLATE, SlabType.FLAT_SLAB]:
-            punching_force = (loads.dead_load + loads.live_load) * \
-                           geometry.length_x * geometry.length_y / 1000  # Approximate
-            punching_shear_ok, punch_ratio = self.check_punching_shear(
-                geometry, material_props, column_size, punching_force
-            )
-            if not punching_shear_ok:
-                design_notes.append("Punching shear inadequate - increase slab thickness or add shear reinforcement")
-        
-        # Calculate utilization ratios
-        moment_utilization = max(
-            moments.moment_x_positive / (As_x * material_props.fy * geometry.effective_depth_x * 0.9 / 1e6),
-            moments.moment_y_positive / (As_y * material_props.fy * geometry.effective_depth_y * 0.9 / 1e6)
-        ) if As_x > 0 and As_y > 0 else 0
-        
-        # FIXED: Actually incorporate punching shear into the utilization and remove the 1.0 clamp!
-        punch_utilization = punch_ratio if 'punch_ratio' in locals() else 0.0
-        utilization_ratio = max(moment_utilization, punch_utilization)
-        
-        # Create result objects
-        reinforcement = SlabReinforcement(
-            main_bars_x=bar_x,
-            main_spacing_x=spacing_x,
-            main_bars_y=bar_y,
-            main_spacing_y=spacing_y,
-            shrinkage_bars=bar_shrink,
-            shrinkage_spacing=spacing_shrink,
-            top_bars=bar_top,
-            top_spacing=spacing_top
-        )
-        
+        design_notes.append("Analysis performed using OpenSeesPy ShellMITC4 3D finite element model.")
+
+        w_u_mpa = ((loads.self_weight + loads.superimposed_dead) * loads.load_factors.get('D',
+                                                                                          1.2) + loads.live_load * loads.load_factors.get(
+            'L', 1.6)) / 1000.0
+        w_s_mpa = (loads.self_weight + loads.superimposed_dead + loads.live_load) / 1000.0
+
+        # RUN 1: Ultimate Load
+        moments, _, fea_notes, ult_grid = self._run_opensees_analysis(geometry, material_props, w_u_mpa,
+                                                                      is_service=False)
+        design_notes.extend(fea_notes)
+
+        # RUN 2: Service Load
+        _, _, _, srv_grid = self._run_opensees_analysis(geometry, material_props, w_s_mpa, is_service=True)
+
+        cracked_deflection, cracked_def_grid = self.calculate_cracked_deflection(srv_grid['W'], moments, geometry,
+                                                                                 material_props)
+
+        # Override the ultimate W grid with the cracked service deflection grid for the contour plot
+        ult_grid['W'] = cracked_def_grid
+        contour_b64s = self.generate_contour_plots(geometry, ult_grid)
+
+        def_limit = max(geometry.length_x, geometry.length_y) / 360.0
+        if cracked_deflection > def_limit:
+            design_notes.append(f"Deflection ({cracked_deflection:.1f}mm) exceeds L/360 limit ({def_limit:.1f}mm).")
+
+        bx, sx = self.design_flexural_reinforcement(moments.moment_x_positive, geometry.effective_depth_x,
+                                                    geometry.thickness, material_props, design_notes, "+Mxx (Span X)")
+        by, sy = self.design_flexural_reinforcement(moments.moment_y_positive, geometry.effective_depth_y,
+                                                    geometry.thickness, material_props, design_notes, "+Myy (Span Y)")
+        bxt, sxt = self.design_flexural_reinforcement(moments.moment_x_negative, geometry.effective_depth_x,
+                                                      geometry.thickness, material_props, design_notes,
+                                                      "-Mxx (Support X)")
+        byt, syt = self.design_flexural_reinforcement(moments.moment_y_negative, geometry.effective_depth_y,
+                                                      geometry.thickness, material_props, design_notes,
+                                                      "-Myy (Support Y)")
+        bsh, ssh = self._select_slab_reinforcement(
+            self._calculate_minimum_slab_reinforcement(1000, geometry.thickness, material_props.fy), 1000,
+            material_props.fy, geometry.thickness)
+
+        def calc_dcr(mu, b_bar, s_bar, d):
+            if mu <= 0: return 0.0
+            As = self.aci.get_bar_area(b_bar) * 1000 / s_bar
+            a = (As * material_props.fy) / (0.85 * material_props.fc_prime * 1000.0)
+            phi_mn = self.phi_factors['flexure'] * As * material_props.fy * (d - a / 2) / 1e6
+            return mu / phi_mn if phi_mn > 0 else 99.9
+
+        max_dcr = max(calc_dcr(moments.moment_x_positive, bx, sx, geometry.effective_depth_x),
+                      calc_dcr(moments.moment_y_positive, by, sy, geometry.effective_depth_y),
+                      calc_dcr(moments.moment_x_negative, bxt, sxt, geometry.effective_depth_x),
+                      calc_dcr(moments.moment_y_negative, byt, syt, geometry.effective_depth_y))
+
         return SlabAnalysisResult(
-            moments=moments,
-            reinforcement=reinforcement,
-            deflection=deflection,
-            crack_width=0.0,  # Simplified - detailed crack analysis needed
-            punching_shear_ok=punching_shear_ok,
-            utilization_ratio=utilization_ratio,
-            design_notes=design_notes
+            SlabType.FEA_MODEL, moments,
+            SlabReinforcement(bx, sx, by, sy, bsh, ssh, bxt, sxt, byt, syt),
+            cracked_deflection, max_dcr, design_notes, contour_b64s
         )

@@ -5,21 +5,14 @@ import math
 import json
 from datetime import date
 
-# Import the ACI 318M-25 library components
 from aci318m25 import MaterialProperties
-from aci318m25_complete import ACI318M25MemberLibrary
 from aci318m25_slab import (
-    ACI318M25SlabDesign, SlabGeometry, SlabLoads, SlabType,
-    SupportCondition, LoadPattern
+    ACI318M25SlabDesign, SlabGeometry, SlabLoads,
+    LoadPattern, EdgeCondition, EdgeSupport, EdgeContinuity
 )
 from shared import expressive_layout
 
-base_aci_lib = ACI318M25MemberLibrary()
 
-
-# ----------------------------------------------------------------------
-# 1. NATIVE AIR SCHEMA
-# ----------------------------------------------------------------------
 class SlabDesignModel(BaseModel):
     action: str = AirField(default="view")
     proj_name: str = AirField(default="Typical Floor Slab")
@@ -27,40 +20,154 @@ class SlabDesignModel(BaseModel):
     proj_eng: str = AirField(default="Engr. Doe")
     proj_date: str = AirField(default="")
 
-    # Geometry
     length_x: float = AirField(default=5000.0)
     length_y: float = AirField(default=6000.0)
     thickness: float = AirField(default=150.0)
     cover: float = AirField(default=20.0)
 
-    # Type & Support
-    slab_type: str = AirField(default="two_way_flat")
-    support_condition: str = AirField(default="continuous")
+    edge_top_support: str = AirField(default="beam")
+    edge_top_cont: str = AirField(default="continuous")
+    edge_top_wall_t: float = AirField(default=200.0)
+    edge_top_beam_b: float = AirField(default=300.0)
+    edge_top_beam_h: float = AirField(default=450.0)
+    edge_top_col_cx: float = AirField(default=400.0)
+    edge_top_col_cy: float = AirField(default=400.0)
 
-    # Materials
+    edge_bot_support: str = AirField(default="beam")
+    edge_bot_cont: str = AirField(default="continuous")
+    edge_bot_wall_t: float = AirField(default=200.0)
+    edge_bot_beam_b: float = AirField(default=300.0)
+    edge_bot_beam_h: float = AirField(default=450.0)
+    edge_bot_col_cx: float = AirField(default=400.0)
+    edge_bot_col_cy: float = AirField(default=400.0)
+
+    edge_left_support: str = AirField(default="beam")
+    edge_left_cont: str = AirField(default="continuous")
+    edge_left_wall_t: float = AirField(default=200.0)
+    edge_left_beam_b: float = AirField(default=300.0)
+    edge_left_beam_h: float = AirField(default=450.0)
+    edge_left_col_cx: float = AirField(default=400.0)
+    edge_left_col_cy: float = AirField(default=400.0)
+
+    edge_right_support: str = AirField(default="beam")
+    edge_right_cont: str = AirField(default="continuous")
+    edge_right_wall_t: float = AirField(default=200.0)
+    edge_right_beam_b: float = AirField(default=300.0)
+    edge_right_beam_h: float = AirField(default=450.0)
+    edge_right_col_cx: float = AirField(default=400.0)
+    edge_right_col_cy: float = AirField(default=400.0)
+
     fc_prime: float = AirField(default=28.0)
     fy: float = AirField(default=420.0)
 
-    # Loads
-    dead_load: float = AirField(default=3.6)  # e.g., self-weight
     superimposed_dead: float = AirField(default=1.2)
     live_load: float = AirField(default=4.8)
 
-    # Punching Shear (for Flat plates/slabs)
-    check_punching: str = AirField(default="no")
-    col_width: float = AirField(default=400.0)
-    col_depth: float = AirField(default=400.0)
+
+def render_edge_input(edge_name: str, prefix: str, data: SlabDesignModel):
+    sup_val = getattr(data, f"{prefix}_support")
+    js_toggle = f"document.getElementById('{prefix}_wall').style.display = (this.value === 'wall') ? 'block' : 'none'; document.getElementById('{prefix}_beam').style.display = (this.value === 'beam') ? 'flex' : 'none'; document.getElementById('{prefix}_col').style.display = (this.value === 'column') ? 'flex' : 'none';"
+
+    return air.Div(
+        air.H4(f"{edge_name} Edge", style="margin-top: 0; margin-bottom: 8px; color: #4b5563; font-size: 15px;"),
+        air.Div(
+            air.Div(air.Label("Support Type"), air.Select(
+                air.Option("Wall", value="wall", selected=(sup_val == "wall")),
+                air.Option("Beam", value="beam", selected=(sup_val == "beam")),
+                air.Option("Column (Ends Only)", value="column", selected=(sup_val == "column")),
+                air.Option("None (Free Edge)", value="none", selected=(sup_val == "none")),
+                name=f"{prefix}_support", onchange=js_toggle
+            ), class_="form-group"),
+            air.Div(air.Label("Continuity"), air.Select(
+                air.Option("Continuous", value="continuous",
+                           selected=(getattr(data, f"{prefix}_cont") == "continuous")),
+                air.Option("Discontinuous", value="discontinuous",
+                           selected=(getattr(data, f"{prefix}_cont") == "discontinuous")),
+                name=f"{prefix}_cont"
+            ), class_="form-group"),
+            class_="grid-2"
+        ),
+        air.Div(
+            air.Label("Wall Thickness (mm)"),
+            air.Input(type="number", name=f"{prefix}_wall_t", value=str(getattr(data, f"{prefix}_wall_t")), step="any"),
+            id=f"{prefix}_wall", style=f"display: {'block' if sup_val == 'wall' else 'none'}; margin-top: 8px;",
+            class_="form-group"
+        ),
+        air.Div(
+            air.Div(air.Label("Beam Width, b (mm)"),
+                    air.Input(type="number", name=f"{prefix}_beam_b", value=str(getattr(data, f"{prefix}_beam_b")),
+                              step="any"), class_="form-group"),
+            air.Div(air.Label("Beam Depth, h (mm)"),
+                    air.Input(type="number", name=f"{prefix}_beam_h", value=str(getattr(data, f"{prefix}_beam_h")),
+                              step="any"), class_="form-group"),
+            id=f"{prefix}_beam", class_="grid-2",
+            style=f"display: {'flex' if sup_val == 'beam' else 'none'}; margin-top: 8px; gap: 16px;"
+        ),
+        air.Div(
+            air.Div(air.Label("Col. Dim X, cx (mm)"),
+                    air.Input(type="number", name=f"{prefix}_col_cx", value=str(getattr(data, f"{prefix}_col_cx")),
+                              step="any"), class_="form-group"),
+            air.Div(air.Label("Col. Dim Y, cy (mm)"),
+                    air.Input(type="number", name=f"{prefix}_col_cy", value=str(getattr(data, f"{prefix}_col_cy")),
+                              step="any"), class_="form-group"),
+            id=f"{prefix}_col", class_="grid-2",
+            style=f"display: {'flex' if sup_val == 'column' else 'none'}; margin-top: 8px; gap: 16px;"
+        ),
+        class_="section-box", style="margin-bottom: 16px;"
+    )
 
 
-# ----------------------------------------------------------------------
-# 2. UI RENDER HELPERS & QTO
-# ----------------------------------------------------------------------
-def generate_slab_plan_css(lx, ly, thickness):
-    """Generates a top-down view of the slab panel."""
+def generate_slab_plan_css(lx, ly, thickness, data: SlabDesignModel, res=None):
     max_dim = max(lx, ly)
     scale = 240 / max(max_dim, 1)
     draw_w = lx * scale
     draw_h = ly * scale
+
+    def get_border(support):
+        if support == "wall": return "4px solid #111827"
+        if support == "beam": return "4px dashed #db2777"
+        if support == "none": return "1px dotted #9ca3af"
+        return "1px solid transparent"
+
+    border_top = get_border(data.edge_top_support)
+    border_bot = get_border(data.edge_bot_support)
+    border_left = get_border(data.edge_left_support)
+    border_right = get_border(data.edge_right_support)
+
+    children = []
+
+    # 1. Overlay Rebar Grid if results exist
+    if res is not None:
+        css_sx = max(2, res.reinforcement.main_spacing_x * scale)
+        css_sy = max(2, res.reinforcement.main_spacing_y * scale)
+
+        children.append(air.Div(
+            style=f"position: absolute; top: 0; left: 0; right: 0; bottom: 0; opacity: 0.35; pointer-events: none; "
+                  f"background-image: "
+                  f"repeating-linear-gradient(to right, transparent, transparent calc({css_sx}px - 1px), #2563eb calc({css_sx}px - 1px), #2563eb {css_sx}px), "
+                  f"repeating-linear-gradient(to bottom, transparent, transparent calc({css_sy}px - 1px), #ef4444 calc({css_sy}px - 1px), #ef4444 {css_sy}px);"
+        ))
+
+    # 2. Draw Columns
+    def draw_cols(edge_support, is_top_or_bot):
+        if edge_support == "column":
+            y_pos = "-6px" if is_top_or_bot == "top" else f"{draw_h - 6}px"
+            x_pos = "-6px" if is_top_or_bot == "left" else f"{draw_w - 6}px"
+            if is_top_or_bot in ["top", "bot"]:
+                children.append(air.Div(
+                    style=f"position:absolute; left:-6px; top:{y_pos}; width:12px; height:12px; background:#1e3a8a;"))
+                children.append(air.Div(
+                    style=f"position:absolute; right:-6px; top:{y_pos}; width:12px; height:12px; background:#1e3a8a;"))
+            else:
+                children.append(air.Div(
+                    style=f"position:absolute; top:-6px; left:{x_pos}; width:12px; height:12px; background:#1e3a8a;"))
+                children.append(air.Div(
+                    style=f"position:absolute; bottom:-6px; left:{x_pos}; width:12px; height:12px; background:#1e3a8a;"))
+
+    draw_cols(data.edge_top_support, "top")
+    draw_cols(data.edge_bot_support, "bot")
+    draw_cols(data.edge_left_support, "left")
+    draw_cols(data.edge_right_support, "right")
 
     return air.Div(
         air.Div(f"Lx = {lx} mm",
@@ -69,83 +176,57 @@ def generate_slab_plan_css(lx, ly, thickness):
             air.Div(f"Ly = {ly} mm",
                     style="position: absolute; left: -85px; top: 50%; transform: translateY(-50%); font-family: monospace; font-weight: 700; color: #6b7280; white-space: nowrap;"),
             air.Div(
-                air.Div(
-                    style="position: absolute; top: 50%; left: 10%; right: 10%; height: 2px; background: rgba(37, 99, 235, 0.3); border-top: 2px dashed #2563eb;"),
-                air.Div(
-                    style="position: absolute; left: 50%; top: 10%; bottom: 10%; width: 2px; background: rgba(37, 99, 235, 0.3); border-left: 2px dashed #2563eb;"),
-                style=f"position: relative; width: {draw_w}px; height: {draw_h}px; background: #f3f4f6; border: 3px solid #111827; border-radius: 4px; box-sizing: border-box; margin: 0 auto; box-shadow: inset 0 0 10px rgba(0,0,0,0.05);"
+                *children,
+                style=f"position: relative; width: {draw_w}px; height: {draw_h}px; background: #f3f4f6; border-top: {border_top}; border-bottom: {border_bot}; border-left: {border_left}; border-right: {border_right}; box-sizing: border-box; margin: 0 auto; box-shadow: inset 0 0 10px rgba(0,0,0,0.05); overflow: hidden;"
             ),
             style="position: relative; display: inline-block; margin-left: 60px;"
         ),
         air.Div(f"Thickness (t) = {thickness} mm",
                 style="text-align: center; font-family: monospace; font-weight: 700; color: #db2777; margin-top: 16px;"),
+        air.Div("Solid = Wall | Dashed = Beam | Dots = Columns | Dotted = Free",
+                style="font-size:11px; color:#9ca3af; margin-top: 8px;"),
         style="display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 32px 24px; background: #ffffff; border-radius: 8px; border: 1px solid #e5e7eb; width: 100%; box-sizing: border-box;"
     )
 
 
-def calculate_slab_qto(geom: SlabGeometry, res, fy: float):
-    """Calculates approximate QTO for the slab panel."""
-    lx_m, ly_m, t_m = geom.length_x / 1000.0, geom.length_y / 1000.0, geom.thickness / 1000.0
-    vol_concrete = lx_m * ly_m * t_m
-    area_formwork = lx_m * ly_m  # Bottom formwork only for flat slabs
+def render_contour_viewer(contours_dict):
+    if not contours_dict: return air.Div()
 
-    rebar_rows = []
-    total_kg = 0.0
+    options = [
+        ("deflection", "Deflection"), ("mxx", "Mxx (Span X)"), ("myy", "Myy (Span Y)"),
+        ("mxy", "Mxy (Twisting)"), ("mx_wa", "Wood-Armer Mx (Bot)"), ("my_wa", "Wood-Armer My (Bot)"),
+        ("vx", "Shear Vx"), ("vy", "Shear Vy")
+    ]
 
-    # Helper to get bar weight per meter
-    def get_kg_m(bar_str):
-        try:
-            db = float(bar_str.replace('D', ''))
-            return (db ** 2) / 162.0, db
-        except:
-            return 0.617, 10.0  # Default to D10
+    img_elements = []
+    for key, title in options:
+        b64 = contours_dict.get(key, "")
+        display = "block" if key == "deflection" else "none"
 
-    # Main X bars (running along X, distributed along Y)
-    if res.reinforcement.main_bars_x and res.reinforcement.main_spacing_x > 0:
-        kg_m, db = get_kg_m(res.reinforcement.main_bars_x)
-        num_bars_x = math.ceil((geom.length_y) / res.reinforcement.main_spacing_x)
-        total_len_x = num_bars_x * lx_m
-        weight_x = total_len_x * kg_m
-        total_kg += weight_x
-        rebar_rows.append(
-            air.Tr(air.Td(air.Strong("Main Bottom X")), air.Td(res.reinforcement.main_bars_x), air.Td(f"{num_bars_x}"),
-                   air.Td(f"{lx_m:.2f}m"), air.Td(f"~{(total_len_x / 12.0):.1f} x 12m"), air.Td(f"{weight_x:.1f} kg")))
+        # FIX: Added max-width: 550px, height: auto, and margin: 0 auto to prevent blowing up
+        img_elements.append(air.Img(
+            src=f"data:image/png;base64,{b64}",
+            id=f"contour_{key}",
+            style=f"display: {display}; width: 100%; max-width: 550px; height: auto; margin: 0 auto; border-radius: 4px;"
+        ))
 
-    # Main Y bars (running along Y, distributed along X)
-    if res.reinforcement.main_bars_y and res.reinforcement.main_spacing_y > 0:
-        kg_m, db = get_kg_m(res.reinforcement.main_bars_y)
-        num_bars_y = math.ceil((geom.length_x) / res.reinforcement.main_spacing_y)
-        total_len_y = num_bars_y * ly_m
-        weight_y = total_len_y * kg_m
-        total_kg += weight_y
-        rebar_rows.append(
-            air.Tr(air.Td(air.Strong("Main Bottom Y")), air.Td(res.reinforcement.main_bars_y), air.Td(f"{num_bars_y}"),
-                   air.Td(f"{ly_m:.2f}m"), air.Td(f"~{(total_len_y / 12.0):.1f} x 12m"), air.Td(f"{weight_y:.1f} kg")))
+    js_toggle = "document.querySelectorAll('[id^=contour_]').forEach(el => el.style.display = 'none'); document.getElementById('contour_' + this.value).style.display = 'block';"
 
-    # Top bars (Approximated over supports, assuming 1/3 span length on each side)
-    if res.reinforcement.top_bars and res.reinforcement.top_spacing > 0:
-        kg_m, db = get_kg_m(res.reinforcement.top_bars)
-        # Approximate: top bars run in both directions around perimeter/supports.
-        # This is a highly simplified QTO for a single panel.
-        num_bars_top_x = math.ceil((geom.length_y) / res.reinforcement.top_spacing)
-        num_bars_top_y = math.ceil((geom.length_x) / res.reinforcement.top_spacing)
-
-        len_top_x = lx_m * 0.33 * 2  # 33% of span on each end
-        len_top_y = ly_m * 0.33 * 2
-
-        total_len_top = (num_bars_top_x * len_top_x) + (num_bars_top_y * len_top_y)
-        weight_top = total_len_top * kg_m
-        total_kg += weight_top
-        rebar_rows.append(
-            air.Tr(air.Td(air.Strong("Top Bars (Supports)")), air.Td(res.reinforcement.top_bars), air.Td("-"),
-                   air.Td("Variable"), air.Td(f"~{(total_len_top / 12.0):.1f} x 12m"), air.Td(f"{weight_top:.1f} kg")))
-
-    return vol_concrete, area_formwork, total_kg, rebar_rows
+    return air.Div(
+        air.H2("FEA Contour Plots"),
+        air.Div(
+            air.Div(
+                air.Label("Select Contour Output:", style="font-size: 14px; margin-bottom: 8px; display: block;"),
+                air.Select(*[air.Option(title, value=key) for key, title in options], onchange=js_toggle),
+                style="margin-bottom: 16px; text-align: center;"
+            ),
+            # FIX: Changed flex-direction and added a cleaner dashed border
+            air.Div(*img_elements,
+                    style="display: flex; flex-direction: column; align-items: center; justify-content: center; background: #ffffff; border: 1px dashed #e5e7eb; padding: 24px; border-radius: 8px;"),
+        ), class_="card no-print"
+    )
 
 
-# ----------------------------------------------------------------------
-# 3. MODULE ROUTES
-# ----------------------------------------------------------------------
 def setup_slab_routes(app):
     @app.get("/slab")
     def slab_index(request: air.Request):
@@ -158,39 +239,18 @@ def setup_slab_routes(app):
                 pass
 
         if not data.proj_date: data.proj_date = date.today().strftime("%Y-%m-%d")
-
-        csrf_token = getattr(request.state, "csrf_token", request.cookies.get("csrftoken", "dev_fallback_token"))
-
-        js_punching_toggle = "document.getElementById('punching_fields').style.display = this.value === 'yes' ? 'flex' : 'none';"
+        csrf_token = getattr(request.state, "csrf_token", request.cookies.get("csrftoken", "dev_token"))
 
         return expressive_layout(
             air.Header(
                 air.A("← Dashboard", href="/", class_="back-link no-print"),
                 air.H1("RC Slab Designer"),
-                air.P("in accordance with ACI 318M-25", class_="subtitle"),
+                air.P("OpenSees FEA Engine", class_="subtitle"),
                 class_="module-header"
             ),
             air.Main(
                 air.Form(
                     air.Input(type="hidden", name="csrf_token", value=csrf_token),
-                    air.Div(
-                        air.H2("Project Information"),
-                        air.Div(
-                            air.Div(air.Label("Project Name"),
-                                    air.Input(type="text", name="proj_name", value=data.proj_name, required=True),
-                                    class_="form-group"),
-                            air.Div(air.Label("Location"),
-                                    air.Input(type="text", name="proj_loc", value=data.proj_loc, required=True),
-                                    class_="form-group"),
-                            air.Div(air.Label("Structural Engineer"),
-                                    air.Input(type="text", name="proj_eng", value=data.proj_eng, required=True),
-                                    class_="form-group"),
-                            air.Div(air.Label("Date"),
-                                    air.Input(type="date", name="proj_date", value=data.proj_date, required=True),
-                                    class_="form-group"),
-                            class_="grid-2"
-                        ), class_="card"
-                    ),
                     air.Div(
                         air.H2("Geometry and Materials"),
                         air.Div(
@@ -206,26 +266,6 @@ def setup_slab_routes(app):
                             air.Div(air.Label("Concrete Cover (mm)"),
                                     air.Input(type="number", name="cover", value=str(data.cover), required=True),
                                     class_="form-group"),
-
-                            air.Div(air.Label("Slab Type"), air.Select(
-                                air.Option("One-Way Slab", value="one_way", selected=(data.slab_type == "one_way")),
-                                air.Option("Two-Way Flat Slab", value="two_way_flat",
-                                           selected=(data.slab_type == "two_way_flat")),
-                                air.Option("Two-Way with Beams", value="two_way_with_beams",
-                                           selected=(data.slab_type == "two_way_with_beams")),
-                                air.Option("Flat Plate", value="flat_plate", selected=(data.slab_type == "flat_plate")),
-                                name="slab_type"), class_="form-group"),
-
-                            air.Div(air.Label("Support Condition"), air.Select(
-                                air.Option("Simply Supported", value="simply_supported",
-                                           selected=(data.support_condition == "simply_supported")),
-                                air.Option("Continuous", value="continuous",
-                                           selected=(data.support_condition == "continuous")),
-                                air.Option("Fixed", value="fixed", selected=(data.support_condition == "fixed")),
-                                air.Option("Cantilever", value="cantilever",
-                                           selected=(data.support_condition == "cantilever")),
-                                name="support_condition"), class_="form-group"),
-
                             air.Div(air.Label("Concrete strength f'c (MPa)"),
                                     air.Input(type="number", name="fc_prime", value=str(data.fc_prime), step="any",
                                               required=True), class_="form-group"),
@@ -236,44 +276,31 @@ def setup_slab_routes(app):
                         ), class_="card"
                     ),
                     air.Div(
-                        air.H2("Loads & Punching Shear"),
+                        air.H2("Edge Support Conditions"),
                         air.Div(
-                            air.Div(
-                                air.H3("Gravity Loads (kN/m²)"),
-                                air.Div(air.Label("Dead Load (e.g. Self-Weight)"),
-                                        air.Input(type="number", name="dead_load", value=str(data.dead_load),
-                                                  step="any", required=True), class_="form-group"),
-                                air.Div(air.Label("Superimposed Dead Load (SDL)"),
-                                        air.Input(type="number", name="superimposed_dead",
-                                                  value=str(data.superimposed_dead), step="any", required=True),
-                                        class_="form-group"),
-                                air.Div(air.Label("Live Load (LL)"),
-                                        air.Input(type="number", name="live_load", value=str(data.live_load),
-                                                  step="any", required=True), class_="form-group"),
-                                class_="section-box"
-                            ),
-                            air.Div(
-                                air.H3("Punching Shear Check"),
-                                air.Div(air.Label("Check Punching Shear?"), air.Select(
-                                    air.Option("No", value="no", selected=(data.check_punching == "no")),
-                                    air.Option("Yes", value="yes", selected=(data.check_punching == "yes")),
-                                    name="check_punching", onchange=js_punching_toggle
-                                ), class_="form-group"),
-                                air.Div(
-                                    air.Div(air.Label("Column Width (mm)"),
-                                            air.Input(type="number", name="col_width", value=str(data.col_width),
-                                                      step="any"), class_="form-group"),
-                                    air.Div(air.Label("Column Depth (mm)"),
-                                            air.Input(type="number", name="col_depth", value=str(data.col_depth),
-                                                      step="any"), class_="form-group"),
-                                    id="punching_fields",
-                                    style=f"display: {'flex' if data.check_punching == 'yes' else 'none'}; gap: 16px;"
-                                ),
-                                class_="section-box"
-                            ),
+                            render_edge_input("Top (Y=Ly)", "edge_top", data),
+                            render_edge_input("Bottom (Y=0)", "edge_bot", data),
+                            render_edge_input("Left (X=0)", "edge_left", data),
+                            render_edge_input("Right (X=Lx)", "edge_right", data),
+                            class_="grid-2"
+                        ), class_="card"
+                    ),
+                    air.Div(
+                        air.H2("Loading (kN/m²)"),
+                        air.P(
+                            f"Note: Slab self-weight is automatically computed based on {data.thickness}mm thickness.",
+                            style="color: var(--text-muted); font-size: 14px; margin-bottom: 16px;"),
+                        air.Div(
+                            air.Div(air.Label("Superimposed Dead Load (SDL)"),
+                                    air.Input(type="number", name="superimposed_dead",
+                                              value=str(data.superimposed_dead), step="any", required=True),
+                                    class_="form-group"),
+                            air.Div(air.Label("Live Load (LL)"),
+                                    air.Input(type="number", name="live_load", value=str(data.live_load), step="any",
+                                              required=True), class_="form-group"),
                             class_="grid-2"
                         ),
-                        air.Button("Perform Design", type="submit",
+                        air.Button("Analyze via OpenSees FEA", type="submit",
                                    style="width: 100%; font-size: 18px; margin-top: 32px;"),
                         class_="card"
                     ),
@@ -290,23 +317,17 @@ def setup_slab_routes(app):
         try:
             data = SlabDesignModel(**form_data)
         except Exception as e:
-            return AirResponse(content=str(expressive_layout(
-                air.Main(air.Div(air.H2("Validation Failed", style="color: #DC2626;"), air.P(str(e)), class_="card"))
-            )), media_type="text/html")
+            return AirResponse(content=str(
+                expressive_layout(air.Main(air.Div(air.H2("Validation Failed"), air.P(str(e)), class_="card")))),
+                               media_type="text/html")
 
         try:
             engine = ACI318M25SlabDesign()
-
-            # 1. Setup Material Properties
             mat_props = MaterialProperties(
-                fc_prime=data.fc_prime, fy=data.fy, fu=data.fy * 1.25,
-                fyt=data.fy, fut=data.fy * 1.25, es=200000.0,
-                ec=base_aci_lib.aci.get_concrete_modulus(data.fc_prime),
-                gamma_c=24.0, description="Custom Slab Material"
+                fc_prime=data.fc_prime, fy=data.fy, fu=data.fy * 1.25, fyt=data.fy, fut=data.fy * 1.25,
+                es=200000.0, ec=4700 * math.sqrt(data.fc_prime), gamma_c=24.0, description="Custom Slab Material"
             )
 
-            # 2. Setup Geometry
-            # Estimate effective depths. Assume main bars in X are outer layer, Y are inner layer. (assuming 12mm bars)
             dx = data.thickness - data.cover - 6.0
             dy = dx - 12.0
 
@@ -314,142 +335,84 @@ def setup_slab_routes(app):
                 length_x=data.length_x, length_y=data.length_y,
                 thickness=data.thickness, cover=data.cover,
                 effective_depth_x=dx, effective_depth_y=dy,
-                slab_type=SlabType(data.slab_type),
-                support_conditions={'all_edges': SupportCondition(data.support_condition)}
+                edge_top=EdgeCondition(EdgeSupport(data.edge_top_support), EdgeContinuity(data.edge_top_cont),
+                                       data.edge_top_wall_t, data.edge_top_beam_b, data.edge_top_beam_h,
+                                       data.edge_top_col_cx, data.edge_top_col_cy),
+                edge_bottom=EdgeCondition(EdgeSupport(data.edge_bot_support), EdgeContinuity(data.edge_bot_cont),
+                                          data.edge_bot_wall_t, data.edge_bot_beam_b, data.edge_bot_beam_h,
+                                          data.edge_bot_col_cx, data.edge_bot_col_cy),
+                edge_left=EdgeCondition(EdgeSupport(data.edge_left_support), EdgeContinuity(data.edge_left_cont),
+                                        data.edge_left_wall_t, data.edge_left_beam_b, data.edge_left_beam_h,
+                                        data.edge_left_col_cx, data.edge_left_col_cy),
+                edge_right=EdgeCondition(EdgeSupport(data.edge_right_support), EdgeContinuity(data.edge_right_cont),
+                                         data.edge_right_wall_t, data.edge_right_beam_b, data.edge_right_beam_h,
+                                         data.edge_right_col_cx, data.edge_right_col_cy)
             )
 
-            # 3. Setup Loads
+            self_weight_knm2 = (data.thickness / 1000.0) * 24.0
+
             loads = SlabLoads(
-                dead_load=data.dead_load, live_load=data.live_load,
-                superimposed_dead=data.superimposed_dead,
-                load_pattern=LoadPattern.UNIFORM,
-                load_factors={'D': 1.2, 'L': 1.6}
+                self_weight=self_weight_knm2, live_load=data.live_load, superimposed_dead=data.superimposed_dead,
+                load_pattern=LoadPattern.UNIFORM, load_factors={'D': 1.2, 'L': 1.6}
             )
 
-            # 4. Perform Design
-            col_size = (data.col_width, data.col_depth) if data.check_punching == 'yes' else None
-            res = engine.perform_complete_slab_design(geom, loads, mat_props, col_size)
+            res = engine.perform_complete_slab_design(geom, loads, mat_props)
 
-            # 5. QTO
-            vol_concrete, area_formwork, total_kg, rebar_rows = calculate_slab_qto(geom, res, data.fy)
-
-            # --- Report Generation ---
             status_util = "#16A34A" if res.utilization_ratio <= 1.0 else "#DC2626"
-
-            # Deflection limit logic
-            span_mm = max(data.length_x, data.length_y)
-            def_limit = span_mm / engine.deflection_limits['immediate']['floor']
+            def_limit = max(data.length_x, data.length_y) / 360.0
             status_def = "#16A34A" if res.deflection <= def_limit else "#DC2626"
 
-            notes_elements = [air.Ul(*[air.Li(f"{'⚠️' if 'exceeds' in n or 'inadequate' in n else 'ℹ️'} {n}") for n in
-                                       set(res.design_notes)], class_="notes-list")] if res.design_notes else [
-                air.P("No design warnings.", style="color: #6b7280; font-style: italic;")]
+            notes_elements = [air.Ul(*[air.Li(f"ℹ️ {n}") for n in set(res.design_notes)],
+                                     class_="notes-list")] if res.design_notes else []
 
             report_content = air.Main(
                 air.Div(
-                    air.Button("🖨️ Save as PDF", onclick="window.print()", style="background-color: var(--secondary);"),
-                    style="margin-bottom: 24px; display: flex; justify-content: flex-end;", class_="no-print"
-                ),
-                air.Div(
-                    air.H2("Project Information"),
-                    air.Div(
-                        air.Div(air.Strong("Project Name: "), air.Span(data.proj_name, class_="data-value")),
-                        air.Div(air.Strong("Location: "), air.Span(data.proj_loc, class_="data-value")),
-                        air.Div(air.Strong("Structural Engineer: "), air.Span(data.proj_eng, class_="data-value")),
-                        air.Div(air.Strong("Date: "), air.Span(data.proj_date, class_="data-value")),
-                        style="display: flex; flex-wrap: wrap; gap: 16px; font-size: 16px;"
-                    ), class_="card"
-                ),
-                air.Div(
-                    air.H2("Input Parameters"),
+                    air.H2("OpenSees FEA Results"),
                     air.Div(
                         air.Div(
-                            air.H3("Geometry and Materials",
-                                   style="font-size: 16px; margin-bottom: 8px; border:none; padding:0;"),
-                            air.Ul(
-                                air.Li(air.Strong("Dimensions"),
-                                       air.Span(f"Lx = {data.length_x}mm, Ly = {data.length_y}mm",
-                                                class_="data-value")),
-                                air.Li(air.Strong("Slab Section"),
-                                       air.Span(f"t = {data.thickness}mm, cover = {data.cover}mm",
-                                                class_="data-value")),
-                                air.Li(air.Strong("Slab Type"),
-                                       air.Span(f"{geom.slab_type.value.replace('_', ' ').title()}",
-                                                class_="data-value")),
-                                air.Li(air.Strong("Support"), air.Span(
-                                    f"{geom.support_conditions['all_edges'].value.replace('_', ' ').title()}",
-                                    class_="data-value")),
-                                air.Li(air.Strong("Materials"),
-                                       air.Span(f"f'c = {data.fc_prime} MPa, fy = {data.fy} MPa", class_="data-value")),
-                            ), class_="section-box"
-                        ),
-                        air.Div(
-                            air.H3("Loads (kN/m²)",
-                                   style="font-size: 16px; margin-bottom: 8px; border:none; padding:0;"),
-                            air.Ul(
-                                air.Li(air.Strong("Dead Load"), air.Span(f"{data.dead_load}", class_="data-value")),
-                                air.Li(air.Strong("Superimposed Dead"),
-                                       air.Span(f"{data.superimposed_dead}", class_="data-value")),
-                                air.Li(air.Strong("Live Load"), air.Span(f"{data.live_load}", class_="data-value")),
-                                air.Li(air.Strong("Factored Load (wu)"), air.Span(
-                                    f"{((data.dead_load + data.superimposed_dead) * 1.2 + data.live_load * 1.6):.2f} kN/m²",
-                                    class_="data-value", style="color:#db2777;")),
-                            ), class_="section-box"
-                        ),
-                        class_="grid-2"
-                    ), class_="card"
-                ),
-                air.Div(class_="page-break"),
-                air.Div(
-                    air.H2("Design Results"),
-                    air.Div(
-                        air.Div(
-                            generate_slab_plan_css(data.length_x, data.length_y, data.thickness),
+                            generate_slab_plan_css(data.length_x, data.length_y, data.thickness, data, res),
                             air.Div(
-                                air.H4("Design Notes", style="margin-top: 20px; color: #92400e;"), *notes_elements,
+                                air.H4("Analysis Log", style="margin-top: 20px; color: #92400e;"), *notes_elements,
                                 style="padding: 16px; background: #fffbeb; border-radius: 8px; border: 1px solid #fde68a; margin-top: 20px;"
                             ),
                             style="display: flex; flex-direction: column;"
                         ),
                         air.Div(
-                            air.H3("DCR & Serviceability"),
+                            air.H3("DCR & Deflection"),
                             air.Ul(
-                                air.Li(air.Strong("Max Utilization (DCR)"),
+                                air.Li(air.Strong("Max Flexural DCR"),
                                        air.Span(f"{res.utilization_ratio:.2f}", class_="data-value",
                                                 style=f"color: {status_util}; font-weight: bold;")),
-                                air.Li(air.Strong("Immediate Deflection"),
+                                air.Li(air.Strong("Max FEA Deflection"),
                                        air.Span(f"{res.deflection:.2f} mm", class_="data-value",
                                                 style=f"color: {status_def}; font-weight: bold;")),
-                                air.Li(air.Strong("Deflection Limit (L/360)"),
+                                air.Li(air.Strong("Deflection Limit"),
                                        air.Span(f"{def_limit:.1f} mm", class_="data-value")),
-                                air.Li(air.Strong("Punching Shear Check"),
-                                       air.Span("PASS" if res.punching_shear_ok else "FAIL/NA", class_="data-value",
-                                                style=f"color: {'#16A34A' if res.punching_shear_ok else '#DC2626'};")),
                             ),
                             air.H3("Reinforcement Details", style="margin-top: 24px;"),
                             air.Ul(
-                                air.Li(air.Strong("Main Bottom X"), air.Span(
+                                air.Li(air.Strong("Main Bottom X (Blue)"), air.Span(
                                     f"{res.reinforcement.main_bars_x} @ {res.reinforcement.main_spacing_x:.0f} mm",
                                     class_="data-value", style="color: #2563eb; font-weight: bold;")),
-                                air.Li(air.Strong("Main Bottom Y"), air.Span(
-                                    f"{res.reinforcement.main_bars_y} @ {res.reinforcement.main_spacing_y:.0f} mm",
-                                    class_="data-value", style="color: #2563eb; font-weight: bold;")),
-                                air.Li(air.Strong("Top Bars (Supports)"), air.Span(
-                                    f"{res.reinforcement.top_bars} @ {res.reinforcement.top_spacing:.0f} mm",
+                                air.Li(air.Strong("Top X (Supports)"), air.Span(
+                                    f"{res.reinforcement.top_bars_x} @ {res.reinforcement.top_spacing_x:.0f} mm",
                                     class_="data-value", style="color: #db2777;")),
-                                air.Li(air.Strong("Shrinkage / Temp"), air.Span(
-                                    f"{res.reinforcement.shrinkage_bars} @ {res.reinforcement.shrinkage_spacing:.0f} mm",
-                                    class_="data-value", style="color: #D97706;")),
+                                air.Li(air.Strong("Main Bottom Y (Red)"), air.Span(
+                                    f"{res.reinforcement.main_bars_y} @ {res.reinforcement.main_spacing_y:.0f} mm",
+                                    class_="data-value", style="color: #ef4444; font-weight: bold;")),
+                                air.Li(air.Strong("Top Y (Supports)"), air.Span(
+                                    f"{res.reinforcement.top_bars_y} @ {res.reinforcement.top_spacing_y:.0f} mm",
+                                    class_="data-value", style="color: #db2777;")),
                             ),
-                            air.H3("Demand Moments (kN·m/m)", style="margin-top: 24px;"),
+                            air.H3("FEA Demand Moments (kN·m/m)", style="margin-top: 24px;"),
                             air.Ul(
-                                air.Li(air.Strong("+Mx (Span)"),
+                                air.Li(air.Strong("+Mxx (Span X)"),
                                        air.Span(f"{res.moments.moment_x_positive:.1f}", class_="data-value")),
-                                air.Li(air.Strong("-Mx (Support)"),
+                                air.Li(air.Strong("-Mxx (Support X)"),
                                        air.Span(f"{res.moments.moment_x_negative:.1f}", class_="data-value")),
-                                air.Li(air.Strong("+My (Span)"),
+                                air.Li(air.Strong("+Myy (Span Y)"),
                                        air.Span(f"{res.moments.moment_y_positive:.1f}", class_="data-value")),
-                                air.Li(air.Strong("-My (Support)"),
+                                air.Li(air.Strong("-Myy (Support Y)"),
                                        air.Span(f"{res.moments.moment_y_negative:.1f}", class_="data-value")),
                             ),
                             class_="section-box", style="height: 100%;"
@@ -457,32 +420,14 @@ def setup_slab_routes(app):
                         class_="grid-2"
                     ), class_="card"
                 ),
-                air.Div(
-                    air.H2("Material Takeoff (Per Panel)"),
-                    air.Div(
-                        air.Div(air.Div("Concrete Vol.", class_="metric-label"),
-                                air.Div(f"{vol_concrete:.2f} m³", class_="metric-value"), class_="metric-card"),
-                        air.Div(air.Div("Formwork", class_="metric-label"),
-                                air.Div(f"{area_formwork:.1f} m²", class_="metric-value"), class_="metric-card blue"),
-                        air.Div(air.Div("Rebar Weight", class_="metric-label"),
-                                air.Div(f"{total_kg:.1f} kg", class_="metric-value"), class_="metric-card green"),
-                        class_="grid-3"
-                    ),
-                    air.Table(
-                        air.Thead(
-                            air.Tr(air.Th("Type"), air.Th("Bar Size"), air.Th("Qty (per panel)"), air.Th("Cut Length"),
-                                   air.Th("Est. Order"), air.Th("Weight"))),
-                        air.Tbody(*rebar_rows)
-                    ),
-                    class_="card"
-                )
+                render_contour_viewer(res.contours)
             )
 
             resp = AirResponse(content=str(expressive_layout(
                 air.Header(
                     air.A("← Edit Inputs", href="/slab", class_="back-link no-print"),
                     air.H1("RC Slab Designer"),
-                    air.P("in accordance with ACI 318M-25", class_="subtitle"),
+                    air.P("OpenSees FEA Engine", class_="subtitle"),
                     class_="module-header"
                 ), report_content
             )), media_type="text/html")
@@ -495,8 +440,8 @@ def setup_slab_routes(app):
                 air.Header(
                     air.A("← Go Back", href="/slab", class_="back-link no-print"),
                     air.H1("Calculation Error"),
-                    air.P("Failed to process slab demands.", class_="subtitle"),
+                    air.P("FEA Failed.", class_="subtitle"),
                     class_="module-header"
                 ),
-                air.Main(air.Div(air.H2("Validation Failed", style="color: #DC2626;"), air.P(str(e)), class_="card"))
+                air.Main(air.Div(air.H2("Exception"), air.P(str(e)), class_="card"))
             )), media_type="text/html")
