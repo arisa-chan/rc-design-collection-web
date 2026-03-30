@@ -25,15 +25,15 @@ class SlabDesignModel(BaseModel):
     thickness: float = AirField(default=150.0)
     cover: float = AirField(default=20.0)
 
-    edge_top_support: str = AirField(default="beam")
-    edge_top_cont: str = AirField(default="continuous")
+    edge_top_support: str = AirField(default="none")
+    edge_top_cont: str = AirField(default="discontinuous")
     edge_top_wall_t: float = AirField(default=200.0)
     edge_top_beam_b: float = AirField(default=300.0)
     edge_top_beam_h: float = AirField(default=450.0)
     edge_top_col_cx: float = AirField(default=400.0)
     edge_top_col_cy: float = AirField(default=400.0)
 
-    edge_bot_support: str = AirField(default="beam")
+    edge_bot_support: str = AirField(default="wall")
     edge_bot_cont: str = AirField(default="continuous")
     edge_bot_wall_t: float = AirField(default=200.0)
     edge_bot_beam_b: float = AirField(default=300.0)
@@ -41,15 +41,15 @@ class SlabDesignModel(BaseModel):
     edge_bot_col_cx: float = AirField(default=400.0)
     edge_bot_col_cy: float = AirField(default=400.0)
 
-    edge_left_support: str = AirField(default="beam")
-    edge_left_cont: str = AirField(default="continuous")
+    edge_left_support: str = AirField(default="wall")
+    edge_left_cont: str = AirField(default="discontinuous")
     edge_left_wall_t: float = AirField(default=200.0)
     edge_left_beam_b: float = AirField(default=300.0)
     edge_left_beam_h: float = AirField(default=450.0)
     edge_left_col_cx: float = AirField(default=400.0)
     edge_left_col_cy: float = AirField(default=400.0)
 
-    edge_right_support: str = AirField(default="beam")
+    edge_right_support: str = AirField(default="wall")
     edge_right_cont: str = AirField(default="continuous")
     edge_right_wall_t: float = AirField(default=200.0)
     edge_right_beam_b: float = AirField(default=300.0)
@@ -62,6 +62,7 @@ class SlabDesignModel(BaseModel):
 
     superimposed_dead: float = AirField(default=1.2)
     live_load: float = AirField(default=4.8)
+    deflection_limit: str = AirField(default="240")
 
 
 def render_edge_input(edge_name: str, prefix: str, data: SlabDesignModel):
@@ -135,12 +136,9 @@ def generate_slab_plan_css(lx, ly, thickness, data: SlabDesignModel, res=None):
     border_right = get_border(data.edge_right_support)
 
     children = []
-
-    # 1. Overlay Rebar Grid if results exist
     if res is not None:
         css_sx = max(2, res.reinforcement.main_spacing_x * scale)
         css_sy = max(2, res.reinforcement.main_spacing_y * scale)
-
         children.append(air.Div(
             style=f"position: absolute; top: 0; left: 0; right: 0; bottom: 0; opacity: 0.35; pointer-events: none; "
                   f"background-image: "
@@ -148,7 +146,6 @@ def generate_slab_plan_css(lx, ly, thickness, data: SlabDesignModel, res=None):
                   f"repeating-linear-gradient(to bottom, transparent, transparent calc({css_sy}px - 1px), #ef4444 calc({css_sy}px - 1px), #ef4444 {css_sy}px);"
         ))
 
-    # 2. Draw Columns
     def draw_cols(edge_support, is_top_or_bot):
         if edge_support == "column":
             y_pos = "-6px" if is_top_or_bot == "top" else f"{draw_h - 6}px"
@@ -202,8 +199,6 @@ def render_contour_viewer(contours_dict):
     for key, title in options:
         b64 = contours_dict.get(key, "")
         display = "block" if key == "deflection" else "none"
-
-        # FIX: Added max-width: 550px, height: auto, and margin: 0 auto to prevent blowing up
         img_elements.append(air.Img(
             src=f"data:image/png;base64,{b64}",
             id=f"contour_{key}",
@@ -220,7 +215,6 @@ def render_contour_viewer(contours_dict):
                 air.Select(*[air.Option(title, value=key) for key, title in options], onchange=js_toggle),
                 style="margin-bottom: 16px; text-align: center;"
             ),
-            # FIX: Changed flex-direction and added a cleaner dashed border
             air.Div(*img_elements,
                     style="display: flex; flex-direction: column; align-items: center; justify-content: center; background: #ffffff; border: 1px dashed #e5e7eb; padding: 24px; border-radius: 8px;"),
         ), class_="card no-print"
@@ -286,7 +280,7 @@ def setup_slab_routes(app):
                         ), class_="card"
                     ),
                     air.Div(
-                        air.H2("Loading (kN/m²)"),
+                        air.H2("Loading & Serviceability"),
                         air.P(
                             f"Note: Slab self-weight is automatically computed based on {data.thickness}mm thickness.",
                             style="color: var(--text-muted); font-size: 14px; margin-bottom: 16px;"),
@@ -298,7 +292,14 @@ def setup_slab_routes(app):
                             air.Div(air.Label("Live Load (LL)"),
                                     air.Input(type="number", name="live_load", value=str(data.live_load), step="any",
                                               required=True), class_="form-group"),
-                            class_="grid-2"
+                            air.Div(air.Label("Long Term Deflection Limit"), air.Select(
+                                air.Option("L/240 (Non-sensitive finishes)", value="240",
+                                           selected=(str(data.deflection_limit) == "240")),
+                                air.Option("L/480 (Sensitive finishes)", value="480",
+                                           selected=(str(data.deflection_limit) == "480")),
+                                name="deflection_limit"
+                            ), class_="form-group"),
+                            class_="grid-3"
                         ),
                         air.Button("Analyze via OpenSees FEA", type="submit",
                                    style="width: 100%; font-size: 18px; margin-top: 32px;"),
@@ -359,8 +360,20 @@ def setup_slab_routes(app):
             res = engine.perform_complete_slab_design(geom, loads, mat_props)
 
             status_util = "#16A34A" if res.utilization_ratio <= 1.0 else "#DC2626"
-            def_limit = max(data.length_x, data.length_y) / 360.0
-            status_def = "#16A34A" if res.deflection <= def_limit else "#DC2626"
+
+            span_mm = max(data.length_x, data.length_y)
+            def_lim_live = span_mm / 360.0
+            def_lim_long = span_mm / float(data.deflection_limit)
+
+            status_def_live = "#16A34A" if res.deflection_live <= def_lim_live else "#DC2626"
+            status_def_long = "#16A34A" if res.deflection_long <= def_lim_long else "#DC2626"
+
+            if res.deflection_live > def_lim_live:
+                res.design_notes.append(
+                    f"Immediate Live Deflection ({res.deflection_live:.1f} mm) exceeds L/360 limit ({def_lim_live:.1f} mm).")
+            if res.deflection_long > def_lim_long:
+                res.design_notes.append(
+                    f"Long-Term Deflection ({res.deflection_long:.1f} mm) exceeds L/{data.deflection_limit} limit ({def_lim_long:.1f} mm).")
 
             notes_elements = [air.Ul(*[air.Li(f"ℹ️ {n}") for n in set(res.design_notes)],
                                      class_="notes-list")] if res.design_notes else []
@@ -383,11 +396,16 @@ def setup_slab_routes(app):
                                 air.Li(air.Strong("Max Flexural DCR"),
                                        air.Span(f"{res.utilization_ratio:.2f}", class_="data-value",
                                                 style=f"color: {status_util}; font-weight: bold;")),
-                                air.Li(air.Strong("Max FEA Deflection"),
-                                       air.Span(f"{res.deflection:.2f} mm", class_="data-value",
-                                                style=f"color: {status_def}; font-weight: bold;")),
-                                air.Li(air.Strong("Deflection Limit"),
-                                       air.Span(f"{def_limit:.1f} mm", class_="data-value")),
+                                air.Li(air.Strong("Immediate Live Deflection"),
+                                       air.Span(f"{res.deflection_live:.2f} mm", class_="data-value",
+                                                style=f"color: {status_def_live}; font-weight: bold;")),
+                                air.Li(air.Strong("Limit (L/360)"),
+                                       air.Span(f"{def_lim_live:.1f} mm", class_="data-value")),
+                                air.Li(air.Strong("Long-Term Deflection"),
+                                       air.Span(f"{res.deflection_long:.2f} mm", class_="data-value",
+                                                style=f"color: {status_def_long}; font-weight: bold;")),
+                                air.Li(air.Strong(f"Limit (L/{data.deflection_limit})"),
+                                       air.Span(f"{def_lim_long:.1f} mm", class_="data-value")),
                             ),
                             air.H3("Reinforcement Details", style="margin-top: 24px;"),
                             air.Ul(

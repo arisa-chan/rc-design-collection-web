@@ -13,7 +13,7 @@ from aci318m25 import ACI318M25, MaterialProperties
 import numpy as np
 import matplotlib
 
-matplotlib.use('Agg')  # Safe for server-side rendering
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import io
 import base64
@@ -107,10 +107,11 @@ class SlabAnalysisResult:
     behavior_type: SlabType
     moments: SlabMoments
     reinforcement: SlabReinforcement
-    deflection: float
+    deflection_live: float
+    deflection_long: float
     utilization_ratio: float
     design_notes: List[str]
-    contours: Dict[str, str] = None  # Holds base64 PNG strings
+    contours: Dict[str, str] = None
 
 
 class ACI318M25SlabDesign:
@@ -135,10 +136,6 @@ class ACI318M25SlabDesign:
         mod_slab = 1.0 if is_service else 0.25
         mod_beam = 1.0 if is_service else 0.35
 
-        if not is_service:
-            notes.append(f"ACI 318 Section properties (cracked): Slabs = {mod_slab} Ig, Beams = {mod_beam} Ig.")
-            notes.append("Note: Walls (0.35 Ig) and Columns (0.70 Ig) are idealized as rigid boundary constraints.")
-
         Ec_slab = Ec * mod_slab
         ops.nDMaterial('ElasticIsotropic', 1, Ec_slab, nu)
         ops.section('ElasticMembranePlateSection', 1, Ec_slab, nu, h, 0.0)
@@ -146,13 +143,11 @@ class ACI318M25SlabDesign:
         nx, ny = 12, 12
         dx, dy = geom.length_x / nx, geom.length_y / ny
 
-        # Generate Nodes
         for i in range(nx + 1):
             for j in range(ny + 1):
                 nodeTag = i * (ny + 1) + j + 1
                 ops.node(nodeTag, i * dx, j * dy, 0.0)
 
-        # Generate Shell Elements
         eleTag = 1
         for i in range(nx):
             for j in range(ny):
@@ -163,7 +158,6 @@ class ACI318M25SlabDesign:
                 ops.element('ShellMITC4', eleTag, n1, n2, n3, n4, 1)
                 eleTag += 1
 
-        # Beams
         ops.geomTransf('Linear', 1, 0.0, 1.0, 0.0)
         ops.geomTransf('Linear', 2, -1.0, 0.0, 0.0)
 
@@ -176,9 +170,8 @@ class ACI318M25SlabDesign:
             Iz = mod_beam * (b * depth ** 3) / 12.0
             Iy = mod_beam * (depth * b ** 3) / 12.0
             a_dim, c_dim = max(b, depth), min(b, depth)
-            J_gross = a_dim * c_dim ** 3 * (
-                        1.0 / 3.0 - 0.21 * (c_dim / a_dim) * (1.0 - (c_dim ** 4) / (12.0 * a_dim ** 4)))
-            J = mod_beam * J_gross
+            J = mod_beam * (a_dim * c_dim ** 3 * (
+                        1.0 / 3.0 - 0.21 * (c_dim / a_dim) * (1.0 - (c_dim ** 4) / (12.0 * a_dim ** 4))))
             G = Ec / (2.0 * (1.0 + nu))
             transfTag = 1 if is_x_dir else 2
             for idx in range(len(node_list) - 1):
@@ -200,7 +193,6 @@ class ACI318M25SlabDesign:
         if geom.edge_right.support == EdgeSupport.BEAM: add_beam_elements(edge_right_nodes, geom.edge_right.beam_b,
                                                                           geom.edge_right.beam_h, False)
 
-        # Boundary Conditions
         node_constraints = {i: [0, 0, 0, 0, 0, 0] for i in range(1, (nx + 1) * (ny + 1) + 1)}
 
         def apply_edge_bcs(node_list, condition, is_x_edge):
@@ -232,7 +224,6 @@ class ACI318M25SlabDesign:
         for n, dofs in node_constraints.items():
             if any(dofs): ops.fix(n, *dofs)
 
-        # Loads & Analysis
         ops.timeSeries('Linear', 1)
         ops.pattern('Plain', 1, 1)
         for i in range(nx + 1):
@@ -250,7 +241,7 @@ class ACI318M25SlabDesign:
         ops.analysis('Static')
         if ops.analyze(1) != 0: raise Exception("OpenSees FEA Model failed to converge.")
 
-        # Post-Processing Grids
+        # Post-Processing
         W = np.zeros((nx + 1, ny + 1))
         MXX = np.zeros((nx + 1, ny + 1))
         MYY = np.zeros((nx + 1, ny + 1))
@@ -275,7 +266,7 @@ class ACI318M25SlabDesign:
                 wc = ops.nodeDisp(n_c, 3)
                 W[i, j] = wc
 
-                # X-direction curvature components
+                # Correct boundary curvature mirroring
                 if i == 0:
                     wr = ops.nodeDisp(1 * (ny + 1) + j + 1, 3)
                     wl = wr if geom.edge_left.continuity == EdgeContinuity.CONTINUOUS else (2 * wc - wr)
@@ -286,7 +277,6 @@ class ACI318M25SlabDesign:
                     wl = ops.nodeDisp((i - 1) * (ny + 1) + j + 1, 3)
                     wr = ops.nodeDisp((i + 1) * (ny + 1) + j + 1, 3)
 
-                # Y-direction curvature components
                 if j == 0:
                     wt = ops.nodeDisp(i * (ny + 1) + 1 + 1, 3)
                     wb = wt if geom.edge_bottom.continuity == EdgeContinuity.CONTINUOUS else (2 * wc - wt)
@@ -331,40 +321,26 @@ class ACI318M25SlabDesign:
                 if mx_top < 0: m_x_neg = max(m_x_neg, abs(mx_top))
                 if my_top < 0: m_y_neg = max(m_y_neg, abs(my_top))
 
-        # Compute Shears via Finite Difference of Moments
+        # Compute Shears via Finite Difference (dx and dy converted to meters)
         VX = np.zeros((nx + 1, ny + 1))
         VY = np.zeros((nx + 1, ny + 1))
-
-        # FIX: Convert mesh step size from mm to meters for the derivative
-        dx_m = dx / 1000.0
-        dy_m = dy / 1000.0
+        dx_m, dy_m = dx / 1000.0, dy / 1000.0
 
         for i in range(nx + 1):
             for j in range(ny + 1):
-                dMxx_dx = (MXX[min(i + 1, nx), j] - MXX[max(i - 1, 0), j]) / (
-                    dx_m if i == 0 or i == nx else 2 * dx_m)
-                dMxy_dy = (MXY[i, min(j + 1, ny)] - MXY[i, max(j - 1, 0)]) / (
-                    dy_m if j == 0 or j == ny else 2 * dy_m)
+                dMxx_dx = (MXX[min(i + 1, nx), j] - MXX[max(i - 1, 0), j]) / (dx_m if i == 0 or i == nx else 2 * dx_m)
+                dMxy_dy = (MXY[i, min(j + 1, ny)] - MXY[i, max(j - 1, 0)]) / (dy_m if j == 0 or j == ny else 2 * dy_m)
                 VX[i, j] = dMxx_dx + dMxy_dy
 
-                dMyy_dy = (MYY[i, min(j + 1, ny)] - MYY[i, max(j - 1, 0)]) / (
-                    dy_m if j == 0 or j == ny else 2 * dy_m)
-                dMxy_dx = (MXY[min(i + 1, nx), j] - MXY[max(i - 1, 0), j]) / (
-                    dx_m if i == 0 or i == nx else 2 * dx_m)
+                dMyy_dy = (MYY[i, min(j + 1, ny)] - MYY[i, max(j - 1, 0)]) / (dy_m if j == 0 or j == ny else 2 * dy_m)
+                dMxy_dx = (MXY[min(i + 1, nx), j] - MXY[max(i - 1, 0), j]) / (dx_m if i == 0 or i == nx else 2 * dx_m)
                 VY[i, j] = dMyy_dy + dMxy_dx
 
         max_def = np.max(np.abs(W))
         grid_data = {'W': W, 'MXX': MXX, 'MYY': MYY, 'MXY': MXY, 'MX_WA': MX_WA, 'MY_WA': MY_WA, 'VX': VX, 'VY': VY}
-
-        if not is_service:
-            notes.append("Moments adjusted using Wood-Armer equations to account for Mxy (twisting).")
-            if beam_eleTag > 100000:
-                notes.append("Actual 3D beam stiffness (elasticBeamColumn) utilized for 'Beam' supported edges.")
-
         return SlabMoments(m_x_pos, m_x_neg, m_y_pos, m_y_neg), max_def, notes, grid_data
 
     def generate_contour_plots(self, geom: SlabGeometry, grid_data: dict) -> Dict[str, str]:
-        """Generates matplotlib contour plots and returns base64 strings."""
         x_lin = np.linspace(0, geom.length_x, grid_data['W'].shape[0])
         y_lin = np.linspace(0, geom.length_y, grid_data['W'].shape[1])
         X, Y = np.meshgrid(x_lin, y_lin, indexing='ij')
@@ -383,7 +359,7 @@ class ACI318M25SlabDesign:
 
         for key, grid_key, title, cmap in configs:
             Z = grid_data[grid_key]
-            if key == 'deflection': Z = np.abs(Z)  # Show downward as positive for clarity
+            if key == 'deflection': Z = np.abs(Z)
 
             plt.figure(figsize=(5, 4.5))
             cs = plt.contourf(X, Y, Z, levels=20, cmap=cmap)
@@ -398,7 +374,6 @@ class ACI318M25SlabDesign:
             plt.close()
             buf.seek(0)
             plots[key] = base64.b64encode(buf.read()).decode('utf-8')
-
         return plots
 
     def design_flexural_reinforcement(self, moment: float, effective_depth: float, thickness: float,
@@ -449,8 +424,8 @@ class ACI318M25SlabDesign:
                                      mat_props: MaterialProperties) -> Tuple[float, np.ndarray]:
         Ig = (1000.0 * geometry.thickness ** 3) / 12.0
         Mcr = (0.62 * math.sqrt(mat_props.fc_prime)) * Ig / (geometry.thickness / 2.0)
-        Ma = max(moments.moment_x_positive, moments.moment_y_positive, moments.moment_x_negative,
-                 moments.moment_y_negative) * 1e6
+        # Using Positive moments to represent mid-span cracking driving deflection
+        Ma = max(moments.moment_x_positive, moments.moment_y_positive) * 1e6
 
         if Ma <= Mcr: return np.max(np.abs(gross_def_grid)), gross_def_grid
 
@@ -462,7 +437,6 @@ class ACI318M25SlabDesign:
                     rho * 1000 * geometry.effective_depth_x) * (geometry.effective_depth_x * (1.0 - k)) ** 2
 
         Ie = max(Icr, (Mcr / Ma) ** 3 * Ig + (1.0 - (Mcr / Ma) ** 3) * Icr)
-
         cracked_grid = gross_def_grid * (Ig / Ie)
         return np.max(np.abs(cracked_grid)), cracked_grid
 
@@ -472,32 +446,39 @@ class ACI318M25SlabDesign:
 
     def perform_complete_slab_design(self, geometry: SlabGeometry, loads: SlabLoads,
                                      material_props: MaterialProperties) -> SlabAnalysisResult:
-        design_notes = []
-        design_notes.append("Analysis performed using OpenSeesPy ShellMITC4 3D finite element model.")
+        design_notes = ["Analysis performed using OpenSeesPy ShellMITC4 3D finite element model."]
 
         w_u_mpa = ((loads.self_weight + loads.superimposed_dead) * loads.load_factors.get('D',
                                                                                           1.2) + loads.live_load * loads.load_factors.get(
             'L', 1.6)) / 1000.0
-        w_s_mpa = (loads.self_weight + loads.superimposed_dead + loads.live_load) / 1000.0
+        w_dead_mpa = (loads.self_weight + loads.superimposed_dead) / 1000.0
+        w_sus_mpa = (loads.self_weight + loads.superimposed_dead + 0.5 * loads.live_load) / 1000.0
+        w_tot_mpa = (loads.self_weight + loads.superimposed_dead + loads.live_load) / 1000.0
 
         # RUN 1: Ultimate Load
         moments, _, fea_notes, ult_grid = self._run_opensees_analysis(geometry, material_props, w_u_mpa,
                                                                       is_service=False)
         design_notes.extend(fea_notes)
 
-        # RUN 2: Service Load
-        _, _, _, srv_grid = self._run_opensees_analysis(geometry, material_props, w_s_mpa, is_service=True)
+        # RUN 2: Dead Load
+        moments_d, _, _, d_grid = self._run_opensees_analysis(geometry, material_props, w_dead_mpa, is_service=True)
+        def_dead, _ = self.calculate_cracked_deflection(d_grid['W'], moments_d, geometry, material_props)
 
-        cracked_deflection, cracked_def_grid = self.calculate_cracked_deflection(srv_grid['W'], moments, geometry,
-                                                                                 material_props)
+        # RUN 3: Sustained Load
+        moments_sus, _, _, sus_grid = self._run_opensees_analysis(geometry, material_props, w_sus_mpa, is_service=True)
+        def_sus, _ = self.calculate_cracked_deflection(sus_grid['W'], moments_sus, geometry, material_props)
 
-        # Override the ultimate W grid with the cracked service deflection grid for the contour plot
+        # RUN 4: Total Service Load
+        moments_tot, _, _, tot_grid = self._run_opensees_analysis(geometry, material_props, w_tot_mpa, is_service=True)
+        def_tot, cracked_def_grid = self.calculate_cracked_deflection(tot_grid['W'], moments_tot, geometry,
+                                                                      material_props)
+
+        def_live = max(0.0, def_tot - def_dead)
+        def_long = def_live + 2.0 * def_sus
+
+        # Override the ultimate W grid with cracked service deflection grid for the visual contour
         ult_grid['W'] = cracked_def_grid
         contour_b64s = self.generate_contour_plots(geometry, ult_grid)
-
-        def_limit = max(geometry.length_x, geometry.length_y) / 360.0
-        if cracked_deflection > def_limit:
-            design_notes.append(f"Deflection ({cracked_deflection:.1f}mm) exceeds L/360 limit ({def_limit:.1f}mm).")
 
         bx, sx = self.design_flexural_reinforcement(moments.moment_x_positive, geometry.effective_depth_x,
                                                     geometry.thickness, material_props, design_notes, "+Mxx (Span X)")
@@ -528,5 +509,5 @@ class ACI318M25SlabDesign:
         return SlabAnalysisResult(
             SlabType.FEA_MODEL, moments,
             SlabReinforcement(bx, sx, by, sy, bsh, ssh, bxt, sxt, byt, syt),
-            cracked_deflection, max_dcr, design_notes, contour_b64s
+            def_live, def_long, max_dcr, design_notes, contour_b64s
         )
