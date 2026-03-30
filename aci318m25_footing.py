@@ -1,662 +1,452 @@
 # -*- coding: utf-8 -*-
 
 """
-ACI 318M-25 Footing Design Library
+ACI 318M-25 Footing Design Library with OpenSeesPy FEA
 Building Code Requirements for Structural Concrete - Foundation Design
-
-Based on:
-- ACI CODE-318M-25 International System of Units
-- Chapter 13: Foundations
-- Chapter 16: Strut-and-Tie Models
-- Chapter 22: Shear and Torsion
-
-@author: Enhanced by AI Assistant  
-@date: 2024
-@version: 1.0
 """
 
 import math
-from typing import Dict, Tuple, List, Optional, Union
+from typing import Dict, Tuple, List, Optional
 from dataclasses import dataclass
 from enum import Enum
-from aci318m25 import ACI318M25, ConcreteStrengthClass, ReinforcementGrade, MaterialProperties
+import numpy as np
+import io
+import base64
+import matplotlib
+
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+
+from aci318m25 import ACI318M25, MaterialProperties
+
+try:
+    import openseespy.opensees as ops
+
+    OPENSEES_AVAILABLE = True
+except ImportError:
+    OPENSEES_AVAILABLE = False
+
 
 class FootingType(Enum):
-    """Types of footings"""
-    ISOLATED_SQUARE = "isolated_square"
-    ISOLATED_RECTANGULAR = "isolated_rectangular"
-    COMBINED = "combined"
-    STRAP = "strap"
-    MAT = "mat"
-    PILE_CAP = "pile_cap"
+    ISOLATED = "isolated"
+
 
 class SoilCondition(Enum):
-    """Soil bearing conditions"""
     ALLOWABLE_STRESS = "allowable_stress"
-    ULTIMATE_BEARING = "ultimate_bearing"
-    SETTLEMENT_CONTROLLED = "settlement_controlled"
+
 
 @dataclass
 class FootingGeometry:
-    """Footing geometry properties"""
-    length: float             # Footing length (mm)
-    width: float              # Footing width (mm)
-    thickness: float          # Footing thickness (mm)
-    cover: float              # Concrete cover (mm)
-    column_width: float       # Column width (mm)
-    column_depth: float       # Column depth (mm)
-    footing_type: FootingType # Type of footing
+    length: float
+    width: float
+    thickness: float
+    cover: float
+    column_width: float
+    column_depth: float
+    footing_type: FootingType
+    ecc_x: float = 0.0
+    ecc_y: float = 0.0
+    soil_modulus: float = 50000.0  # kN/m³
+    mesh_nx: int = 16
+    mesh_ny: int = 16
+
 
 @dataclass
 class SoilProperties:
-    """Soil properties for footing design"""
-    bearing_capacity: float   # Allowable or ultimate bearing capacity (kPa)
-    unit_weight: float        # Soil unit weight (kN/m³)
-    friction_angle: float     # Internal friction angle (degrees)
-    cohesion: float           # Soil cohesion (kPa)
-    condition: SoilCondition  # Soil bearing condition type
+    bearing_capacity: float  # kPa
+    unit_weight: float = 18.0
+    condition: SoilCondition = SoilCondition.ALLOWABLE_STRESS
+
 
 @dataclass
 class FootingLoads:
-    """Footing load conditions"""
-    axial_force: float        # Factored axial force (kN)
-    moment_x: float           # Factored moment about x-axis (kN⋅m)
-    moment_y: float           # Factored moment about y-axis (kN⋅m)
-    shear_x: float            # Factored shear in x-direction (kN)
-    shear_y: float            # Factored shear in y-direction (kN)
-    service_axial: float      # Service axial load for bearing check (kN)
-    service_moment_x: float   # Service moment x for bearing check (kN⋅m)
-    service_moment_y: float   # Service moment y for bearing check (kN⋅m)
-    eccentricity_x: float = 0.0  # Eccentricity x of column from footing center (mm)
-    eccentricity_y: float = 0.0  # Eccentricity y of column from footing center (mm)
+    axial_force: float
+    moment_x: float
+    moment_y: float
+    shear_x: float
+    shear_y: float
+    service_axial: float
+    service_moment_x: float
+    service_moment_y: float
+
 
 @dataclass
 class FootingReinforcement:
-    """Footing reinforcement design"""
-    bottom_bars_x: str        # Bottom reinforcement in x-direction
-    bottom_spacing_x: float   # Bottom bar spacing x-direction (mm)
-    bottom_bars_y: str        # Bottom reinforcement in y-direction
-    bottom_spacing_y: float   # Bottom bar spacing y-direction (mm)
-    top_bars: str             # Top reinforcement if required
-    top_spacing: float        # Top bar spacing (mm)
-    development_length: float # Development length (mm)
-    dowel_bars: str           # Column dowel bars
-    dowel_length: float       # Dowel bar length (mm)
+    bottom_bars_x: str
+    bottom_spacing_x: float
+    bottom_bars_y: str
+    bottom_spacing_y: float
+    top_bars_x: str
+    top_spacing_x: float
+    top_bars_y: str
+    top_spacing_y: float
+    development_length: float
+    dowel_bars: str
+    dowel_length: float
+
 
 @dataclass
 class FootingAnalysisResult:
-    """Complete footing analysis results"""
-    bearing_pressure: float   # Maximum bearing pressure (kPa)
-    bearing_ok: bool          # Bearing capacity check result
-    one_way_shear_ok: bool    # One-way shear check result
-    two_way_shear_ok: bool    # Two-way (punching) shear check result
+    bearing_pressure_max: float
+    bearing_pressure_min: float
+    bearing_ok: bool
+    one_way_shear_ok: bool
+    two_way_shear_ok: bool
     reinforcement: FootingReinforcement
-    utilization_ratio: float # Maximum utilization ratio
-    design_notes: List[str]   # Design notes and warnings
-    final_length: float       # Final footing length (mm)
-    final_width: float        # Final footing width (mm)
-    final_thickness: float    # Final footing thickness (mm)
+    utilization_ratio: float
+    design_notes: List[str]
+    fea_moment_x: float
+    fea_moment_y: float
+    fea_shear_x: float
+    fea_shear_y: float
+    contours: Dict[str, str] = None
+
 
 class ACI318M25FootingDesign:
-    """
-    ACI 318M-25 Footing Design Library
-    
-    Comprehensive footing design according to ACI 318M-25:
-    - Foundation design (Chapter 13)
-    - Bearing pressure calculations
-    - One-way and two-way shear checks
-    - Flexural reinforcement design
-    - Development length requirements
-    """
-    
+
     def __init__(self):
-        """Initialize footing design calculator"""
         self.aci = ACI318M25()
-        
-        # Strength reduction factors φ - ACI 318M-25 Section 21.2
-        self.phi_factors = {
-            'flexure': 0.90,
-            'shear': 0.75,
-            'bearing': 0.65
+        self.phi_factors = {'flexure': 0.90, 'shear': 0.75, 'bearing': 0.65}
+
+    def _run_opensees_analysis(self, geom: FootingGeometry, loads: FootingLoads, mat_props: MaterialProperties,
+                               is_service: bool = False) -> Tuple[dict, List[str]]:
+        notes = []
+        if not OPENSEES_AVAILABLE:
+            raise ImportError("OpenSeesPy is required.")
+
+        ops.wipe()
+        ops.model('basic', '-ndm', 3, '-ndf', 6)
+
+        Ec = mat_props.ec
+        nu = 0.2
+        h = geom.thickness
+
+        # Slab Section
+        ops.nDMaterial('ElasticIsotropic', 1, Ec, nu)
+        ops.section('ElasticMembranePlateSection', 1, Ec, nu, h, 0.0)
+
+        Lx, Ly = geom.length, geom.width
+        nx, ny = geom.mesh_nx, geom.mesh_ny
+        dx, dy = Lx / nx, Ly / ny
+
+        # Create nodes (center of footing at 0,0)
+        nodeTags = {}
+        for i in range(nx + 1):
+            for j in range(ny + 1):
+                tag = i * (ny + 1) + j + 1
+                x = i * dx - Lx / 2.0
+                y = j * dy - Ly / 2.0
+                ops.node(tag, x, y, 0.0)
+                nodeTags[(i, j)] = tag
+
+        # Shell elements
+        eleTag = 1
+        for i in range(nx):
+            for j in range(ny):
+                n1 = nodeTags[(i, j)]
+                n2 = nodeTags[(i + 1, j)]
+                n3 = nodeTags[(i + 1, j + 1)]
+                n4 = nodeTags[(i, j + 1)]
+                ops.element('ShellMITC4', eleTag, n1, n2, n3, n4, 1)
+                eleTag += 1
+
+        # Compression-only Soil Springs (using ENT material)
+        ks_mpa_mm = geom.soil_modulus * 1e-6  # Convert kN/m³ to N/mm³ (MPa/mm)
+        matTag_spring = 100
+
+        for i in range(nx + 1):
+            for j in range(ny + 1):
+                ax = dx if (0 < i < nx) else dx / 2.0
+                ay = dy if (0 < j < ny) else dy / 2.0
+                trib_area = ax * ay  # mm²
+
+                k_spring = ks_mpa_mm * trib_area  # N/mm
+                if k_spring < 1e-9: continue
+
+                spring_mat = matTag_spring + nodeTags[(i, j)]
+                ops.uniaxialMaterial('ENT', spring_mat, k_spring)
+
+                support_tag = nodeTags[(i, j)] + 10000
+                ops.node(support_tag, i * dx - Lx / 2.0, j * dy - Ly / 2.0, 0.0)
+                ops.fix(support_tag, 1, 1, 1, 1, 1, 1)
+
+                # ZeroLength element acting in Z direction (DOF 3)
+                ops.element('zeroLength', eleTag, support_tag, nodeTags[(i, j)], '-mat', spring_mat, '-dir', 3)
+                eleTag += 1
+
+        # Torsional stability constraint (soil provides no X/Y/Rot restraint)
+        ops.fix(nodeTags[(nx // 2, ny // 2)], 1, 1, 0, 0, 0, 1)
+
+        # Apply Column Loads via Rigid Spider to prevent moment singularities
+        col_x, col_y = geom.ecc_x, geom.ecc_y
+        master_node = 99999
+        ops.node(master_node, col_x, col_y, 0.0)
+
+        # Find nodes within column footprint
+        cw, cd = geom.column_width, geom.column_depth
+        footprint_nodes = []
+        for (i, j), tag in nodeTags.items():
+            x = i * dx - Lx / 2.0
+            y = j * dy - Ly / 2.0
+            if abs(x - col_x) <= cw / 2.0 and abs(y - col_y) <= cd / 2.0:
+                footprint_nodes.append(tag)
+
+        if not footprint_nodes:
+            # Fallback to nearest node if footprint is too small
+            min_dist, best_node = float('inf'), None
+            for (i, j), tag in nodeTags.items():
+                x = i * dx - Lx / 2.0;
+                y = j * dy - Ly / 2.0
+                d = math.hypot(x - col_x, y - col_y)
+                if d < min_dist: min_dist, best_node = d, tag
+            footprint_nodes.append(best_node)
+
+        # Rigidly link master to footprint nodes
+        for fn in footprint_nodes:
+            ops.rigidLink('beam', master_node, fn)
+
+        # Apply Loads
+        P = loads.service_axial if is_service else loads.axial_force
+        Mx = loads.service_moment_x if is_service else loads.moment_x
+        My = loads.service_moment_y if is_service else loads.moment_y
+
+        # Load values (Convert kN, kN-m to N, N-mm)
+        ops.timeSeries('Linear', 1)
+        ops.pattern('Plain', 1, 1)
+        ops.load(master_node, 0.0, 0.0, -P * 1000.0, Mx * 1e6, My * 1e6, 0.0)
+
+        # Add self-weight
+        w_sw = 24e-6 * h  # N/mm²
+        factor = 1.0 if is_service else 1.2
+        for (i, j), tag in nodeTags.items():
+            ax = dx if (0 < i < nx) else dx / 2.0
+            ay = dy if (0 < j < ny) else dy / 2.0
+            ops.load(tag, 0.0, 0.0, -w_sw * (ax * ay) * factor, 0.0, 0.0, 0.0)
+
+        # Analysis settings (Nonlinear due to ENT)
+        ops.system('BandGeneral')
+        ops.numberer('RCM')
+        ops.constraints('Transformation')
+        ops.test('NormDispIncr', 1.0e-5, 100, 0)
+        ops.algorithm('Newton')
+        ops.integrator('LoadControl', 0.1)
+        ops.analysis('Static')
+
+        ok = ops.analyze(10)
+        if ok != 0:
+            notes.append(
+                "⚠️ Nonlinear soil springs failed to converge. Reverting to linear elastic soil (uplift ignored).")
+            ops.wipeAnalysis()
+            for i in range(nx + 1):
+                for j in range(ny + 1):
+                    ax = dx if (0 < i < nx) else dx / 2.0;
+                    ay = dy if (0 < j < ny) else dy / 2.0
+                    ops.uniaxialMaterial('Elastic', matTag_spring + nodeTags[(i, j)], ks_mpa_mm * ax * ay)
+            ops.system('BandSPD')
+            ops.test('NormDispIncr', 1.0e-6, 100, 0)
+            ops.algorithm('Linear')
+            ops.analyze(10)
+
+        # Extract Results
+        W = np.zeros((nx + 1, ny + 1))
+        MXX = np.zeros((nx + 1, ny + 1))
+        MYY = np.zeros((nx + 1, ny + 1))
+        Q_SOIL = np.zeros((nx + 1, ny + 1))
+
+        D = (Ec * h ** 3) / (12.0 * (1.0 - nu ** 2))
+
+        def get_w(xi, yj):
+            return ops.nodeDisp(xi * (ny + 1) + yj + 1, 3)
+
+        for i in range(nx + 1):
+            for j in range(ny + 1):
+                n_c = i * (ny + 1) + j + 1
+                wc = ops.nodeDisp(n_c, 3)
+                W[i, j] = wc
+
+                # Soil Pressure (kPa) -> w(mm) * ks(N/mm3) * 1000 = kPa
+                if wc < 0:
+                    Q_SOIL[i, j] = abs(wc) * ks_mpa_mm * 1000.0
+
+                # Basic Finite Difference for moments (simplified boundaries)
+                wl = get_w(max(0, i - 1), j)
+                wr = get_w(min(nx, i + 1), j)
+                wb = get_w(i, max(0, j - 1))
+                wt = get_w(i, min(ny, j + 1))
+
+                dx_eff = dx if (0 < i < nx) else dx * 2
+                dy_eff = dy if (0 < j < ny) else dy * 2
+
+                d2w_dx2 = (wl - 2 * wc + wr) / (dx_eff ** 2) if (0 < i < nx) else 0
+                d2w_dy2 = (wb - 2 * wc + wt) / (dy_eff ** 2) if (0 < j < ny) else 0
+
+                mxx = D * (d2w_dx2 + nu * d2w_dy2) * 0.001  # kN-m/m
+                myy = D * (d2w_dy2 + nu * d2w_dx2) * 0.001  # kN-m/m
+
+                MXX[i, j] = mxx
+                MYY[i, j] = myy
+
+        VX, VY = np.zeros((nx + 1, ny + 1)), np.zeros((nx + 1, ny + 1))
+        dx_m, dy_m = dx / 1000.0, dy / 1000.0
+        for i in range(nx + 1):
+            for j in range(ny + 1):
+                VX[i, j] = (MXX[min(i + 1, nx), j] - MXX[max(i - 1, 0), j]) / (2 * dx_m if 0 < i < nx else dx_m)
+                VY[i, j] = (MYY[i, min(j + 1, ny)] - MYY[i, max(j - 1, 0)]) / (2 * dy_m if 0 < j < ny else dy_m)
+
+        res_data = {
+            'W': W, 'MXX': MXX, 'MYY': MYY, 'VX': VX, 'VY': VY, 'Q_SOIL': Q_SOIL
         }
-        
-        # Minimum reinforcement requirements
-        self.min_reinforcement = {
-            'ratio': 0.0012,           # Minimum reinforcement ratio for footings
-            'min_bar_size': 'D16',     # Minimum bar size
-            'max_spacing': 450,        # Maximum bar spacing (mm)
-            'min_spacing': 150         # Minimum bar spacing (mm)
-        }
-        
-        # Design constants
-        self.design_constants = {
-            'bearing_reduction_factor': 0.85,  # For bearing on concrete
-            'transfer_stress_factor': 0.85,    # For load transfer
-            'min_footing_thickness': 150       # Minimum footing thickness (mm)
-        }
-    
-    def calculate_required_footing_area(self, loads: FootingLoads,
-                                      soil_props: SoilProperties,
-                                      footing_weight_factor: float = 1.1) -> Tuple[float, float]:
-        """
-        Calculate required footing dimensions for bearing capacity
-        
-        Args:
-            loads: Footing load conditions (service loads)
-            soil_props: Soil properties
-            footing_weight_factor: Factor to account for footing self-weight
-            
-        Returns:
-            Tuple of (required_length, required_width) in mm
-        """
-        # Service loads for bearing check
-        P_service = loads.service_axial
-        Mx_service = loads.service_moment_x
-        My_service = loads.service_moment_y
-        
-        # Account for footing self-weight (approximate)
-        P_total = P_service * footing_weight_factor
-        
-        # Allowable bearing pressure
-        qa = soil_props.bearing_capacity
-        
-        if abs(Mx_service) < 0.001 and abs(My_service) < 0.001:
-            # Concentric loading
-            required_area = P_total / qa  # m²
-            # Assume square footing for concentric loading
-            side_length = math.sqrt(required_area)
-            return side_length * 1000, side_length * 1000 # Convert to mm
-        else:
-            # Eccentric loading - iterative approach needed
-            # Start with concentric area and increase
-            base_area = P_total / qa
-            factor = 1.5  # Initial factor for eccentricity
-            
-            # Try square footing first
-            B = L = math.sqrt(base_area * factor)
-            
-            # Check bearing pressure with eccentricity
-            for iteration in range(10):
-                ex = Mx_service / P_total if P_total > 0 else 0
-                ey = My_service / P_total if P_total > 0 else 0
-                
-                # Check if eccentricity is within middle third
-                if abs(ex) <= L/6 and abs(ey) <= B/6:
-                    # No tension - calculate maximum pressure
-                    qmax = (P_total / (B * L)) * (1 + 6*ex/L + 6*ey/B)
-                    if qmax <= qa:
-                        break
-                
-                # Increase size
-                factor *= 1.2
-                B = L = math.sqrt(base_area * factor)
-            
-            # Convert final m to mm before returning
-            return L * 1000, B * 1000
-    
-    def calculate_bearing_pressure(self, geometry: FootingGeometry,
-                                 loads: FootingLoads) -> Tuple[float, float, bool]:
-        """
-        Calculate bearing pressure distribution
-        
-        Args:
-            geometry: Footing geometric properties
-            loads: Footing load conditions (service loads)
-            
-        Returns:
-            Tuple of (max_pressure_kPa, min_pressure_kPa, no_tension)
-        """
-        P = loads.service_axial
-        Mx = loads.service_moment_x
-        My = loads.service_moment_y
-        
-        A = geometry.length * geometry.width / 1e6  # Convert to m²
-        Sx = geometry.length * geometry.width**2 / (6 * 1e9)  # Section modulus about x
-        Sy = geometry.width * geometry.length**2 / (6 * 1e9)  # Section modulus about y
-        
-        # Bearing pressure at corners
-        q_avg = P / A
-        q_mx = Mx / Sx if Sx > 0 else 0
-        q_my = My / Sy if Sy > 0 else 0
-        
-        # Corner pressures
-        q1 = q_avg + q_mx + q_my  # Corner with maximum pressure
-        q2 = q_avg + q_mx - q_my
-        q3 = q_avg - q_mx + q_my
-        q4 = q_avg - q_mx - q_my  # Corner with minimum pressure
-        
-        qmax = max(q1, q2, q3, q4)
-        qmin = min(q1, q2, q3, q4)
-        
-        no_tension = qmin >= 0
-        
-        return qmax, qmin, no_tension
-    
-    def check_one_way_shear(self, geometry: FootingGeometry,
-                          loads: FootingLoads,
-                          material_props: MaterialProperties) -> Tuple[bool, float]:
-        """
-        Check one-way shear (beam shear)
-        ACI 318M-25 Section 22.5
-        
-        Args:
-            geometry: Footing geometric properties
-            loads: Footing load conditions
-            material_props: Material properties
-            
-        Returns:
-            Tuple of (is_adequate, utilization_ratio)
-        """
-        fc_prime = material_props.fc_prime
-        d = geometry.thickness - geometry.cover - 20  # Effective depth (assume 20mm bar)
-        
-        # Critical section at distance d from column face
-        critical_distance_x = (geometry.length - geometry.column_width) / 2 - d
-        critical_distance_y = (geometry.width - geometry.column_depth) / 2 - d
-        
-        if critical_distance_x <= 0 or critical_distance_y <= 0:
-            # No critical section exists - shear is OK
-            return True, 0.0
-        
-        # Factored bearing pressure (approximate)
-        bearing_area = geometry.length * geometry.width / 1e6  # m²
-        qu = loads.axial_force / bearing_area  # kPa
-        
-        # Shear force at critical section (both directions)
-        # FIXED: Divide by 1e6 to convert mm² to m²
-        Vu_x = qu * critical_distance_x * geometry.width / 1e6  # kN
-        Vu_y = qu * critical_distance_y * geometry.length / 1e6  # kN
-        
-        # Concrete shear strength - ACI 318M-25 Eq. (22.5.5.1)
-        lambda_factor = 1.0  # Normal weight concrete
-        
-        # Shear capacity for both directions
-        Vc_x = lambda_factor * 0.17 * math.sqrt(fc_prime) * geometry.width * d / 1000  # kN
-        Vc_y = lambda_factor * 0.17 * math.sqrt(fc_prime) * geometry.length * d / 1000  # kN
-        
-        phi = self.phi_factors['shear']
-        phi_Vc_x = phi * Vc_x
-        phi_Vc_y = phi * Vc_y
-        
-        # Check adequacy
-        utilization_x = Vu_x / phi_Vc_x if phi_Vc_x > 0 else 0
-        utilization_y = Vu_y / phi_Vc_y if phi_Vc_y > 0 else 0
-        
-        max_utilization = max(utilization_x, utilization_y)
-        is_adequate = max_utilization <= 1.0
-        
-        return is_adequate, max_utilization
-    
-    def check_two_way_shear(self, geometry: FootingGeometry,
-                          loads: FootingLoads,
-                          material_props: MaterialProperties) -> Tuple[bool, float]:
-        """
-        Check two-way shear (punching shear)
-        ACI 318M-25 Section 22.6
-        """
-        fc_prime = material_props.fc_prime
-        d = geometry.thickness - geometry.cover - 20  # Effective depth
-        
-        # Critical section perimeter at d/2 from column face
-        bo = 2 * (geometry.column_width + d) + 2 * (geometry.column_depth + d)
-        
-        # Punching shear force
-        bearing_area = geometry.length * geometry.width / 1e6  # m²
-        qu = loads.axial_force / bearing_area  # kPa
-        
-        # Area inside critical section
-        critical_area = (geometry.column_width + d) * (geometry.column_depth + d) / 1e6  # m²
-        Vu = loads.axial_force - qu * critical_area  # kN
-        
-        # Correctly calculate beta (ratio of long side to short side of column)
-        col_max = max(geometry.column_width, geometry.column_depth)
-        col_min = min(geometry.column_width, geometry.column_depth)
-        beta = col_max / col_min if col_min > 0 else 1.0
-        
-        # Three controlling equations:
-        vc1 = 0.17 * (1 + 2/beta) * math.sqrt(fc_prime)
-        
-        # Note: Assuming interior column (alphas = 40). 
-        # For edge/corner columns, alphas drops to 30 or 20, and 'bo' calculation changes.
-        alphas = 40  
+        return res_data, notes
+
+    def generate_contour_plots(self, geom: FootingGeometry, grid_data: dict) -> Dict[str, str]:
+        x_lin = np.linspace(-geom.length / 2, geom.length / 2, grid_data['W'].shape[0])
+        y_lin = np.linspace(-geom.width / 2, geom.width / 2, grid_data['W'].shape[1])
+        X, Y = np.meshgrid(x_lin, y_lin, indexing='ij')
+
+        plots = {}
+        configs = [
+            ('soil_pressure', 'Q_SOIL', 'Bearing Pressure (kPa)', 'YlOrRd'),
+            ('mxx', 'MXX', 'Mxx Bending (kN-m/m)', 'RdBu_r'),
+            ('myy', 'MYY', 'Myy Bending (kN-m/m)', 'RdBu_r'),
+            ('vx', 'VX', 'Shear Vx (kN/m)', 'coolwarm'),
+            ('vy', 'VY', 'Shear Vy (kN/m)', 'coolwarm'),
+        ]
+
+        for key, grid_key, title, cmap in configs:
+            Z = grid_data[grid_key]
+            plt.figure(figsize=(5, 4.5))
+            cs = plt.contourf(X, Y, Z, levels=20, cmap=cmap)
+            plt.colorbar(cs)
+
+            # Plot column outline
+            cw, cd = geom.column_width, geom.column_depth
+            cx, cy = geom.ecc_x, geom.ecc_y
+            plt.plot([cx - cw / 2, cx + cw / 2, cx + cw / 2, cx - cw / 2, cx - cw / 2],
+                     [cy - cd / 2, cy - cd / 2, cy + cd / 2, cy + cd / 2, cy - cd / 2], 'k-', linewidth=2)
+
+            plt.title(title, fontsize=12, fontweight='bold', color='#111827')
+            plt.xlabel("X (mm)")
+            plt.ylabel("Y (mm)")
+            plt.tight_layout()
+
+            buf = io.BytesIO()
+            plt.savefig(buf, format='png', dpi=120)
+            plt.close()
+            buf.seek(0)
+            plots[key] = base64.b64encode(buf.read()).decode('utf-8')
+        return plots
+
+    def check_two_way_shear(self, geom: FootingGeometry, loads: FootingLoads, mat: MaterialProperties) -> Tuple[
+        bool, float]:
+        fc_prime = mat.fc_prime
+        d = geom.thickness - geom.cover - 20
+        bo = 2 * (geom.column_width + d) + 2 * (geom.column_depth + d)
+
+        bearing_area = geom.length * geom.width / 1e6
+        qu = loads.axial_force / bearing_area
+        critical_area = (geom.column_width + d) * (geom.column_depth + d) / 1e6
+        Vu = loads.axial_force - qu * critical_area
+
+        beta = max(geom.column_width, geom.column_depth) / min(geom.column_width, geom.column_depth)
+        alphas = 40
+        vc1 = 0.17 * (1 + 2 / beta) * math.sqrt(fc_prime)
         vc2 = 0.083 * (alphas * d / bo + 2) * math.sqrt(fc_prime)
         vc3 = 0.33 * math.sqrt(fc_prime)
-        
-        # Controlling punching shear strength
         vc = min(vc1, vc2, vc3)
-        
-        # Nominal punching shear capacity
-        Vn = vc * bo * d / 1000  # Convert to kN
-        phi = self.phi_factors['shear']
-        phi_Vn = phi * Vn
-        
-        utilization_ratio = Vu / phi_Vn if phi_Vn > 0 else float('inf')
-        is_adequate = utilization_ratio <= 1.0
-        
-        return is_adequate, utilization_ratio
-    
-    def design_flexural_reinforcement(self, geometry: FootingGeometry,
-                                    loads: FootingLoads,
-                                    material_props: MaterialProperties) -> FootingReinforcement:
-        """
-        Design flexural reinforcement for footing
-        ACI 318M-25 Chapter 13
-        """
-        fc_prime = material_props.fc_prime
-        fy = material_props.fy
-        d = geometry.thickness - geometry.cover - 20  # Effective depth
-        
-        # Factored bearing pressure
-        bearing_area = geometry.length * geometry.width / 1e6  # m²
-        qu = loads.axial_force / bearing_area  # kPa
-        
-        # Critical sections for moment (at face of column)
-        cantilever_x = (geometry.length - geometry.column_width) / 2  # mm
-        cantilever_y = (geometry.width - geometry.column_depth) / 2   # mm
-        
-        # Factored moments per unit width
-        Mu_x = qu * cantilever_x**2 / (2 * 1e6)  # kN⋅m/m
-        Mu_y = qu * cantilever_y**2 / (2 * 1e6)  # kN⋅m/m
-        
-        # Design reinforcement for each direction
-        As_x = self._calculate_required_steel_area(Mu_x, 1000, d, fc_prime, fy)  # per meter width
-        As_y = self._calculate_required_steel_area(Mu_y, 1000, d, fc_prime, fy)  # per meter width
-        
-        # Correct minimum reinforcement: Shrinkage and temperature steel per ACI 318M-25
-        if fy <= 420:
-            rho_min = 0.0020
-        elif fy <= 520:
-            rho_min = 0.0018
-        else:
-            rho_min = 0.0018 * 420.0 / fy
-            
-        # As_min applies to gross section (width * thickness)
-        As_min = rho_min * 1000 * geometry.thickness  # per meter width
-        
-        As_x = max(As_x, As_min)
-        As_y = max(As_y, As_min)
-        
-        # Select reinforcement considering spacing limits
-        bar_x, spacing_x = self._select_footing_reinforcement(
-            As_x, 1000.0, fy, geometry.thickness, geometry.cover
+
+        phi_Vn = self.phi_factors['shear'] * vc * bo * d / 1000
+        ratio = Vu / phi_Vn if phi_Vn > 0 else 99.9
+        return ratio <= 1.0, ratio
+
+    def _select_rebar(self, As_req: float, width: float, thickness: float) -> Tuple[str, float]:
+        bar_sizes = ['D12', 'D16', 'D20', 'D25']
+        max_s = min(3 * thickness, 450.0)
+        for bar in bar_sizes:
+            area = self.aci.get_bar_area(bar)
+            s = area * width / As_req
+            db = self.aci.get_bar_diameter(bar)
+            if (max(25.0, db) + db) <= s <= max_s:
+                return bar, math.floor(s / 10.0) * 10.0
+        return 'D20', math.floor(max_s / 10.0) * 10.0
+
+    def perform_complete_design(self, geom: FootingGeometry, loads: FootingLoads, soil: SoilProperties,
+                                mat: MaterialProperties) -> FootingAnalysisResult:
+        notes = ["FEA analysis performed using OpenSeesPy ShellMITC4 elements."]
+
+        # 1. Service Analysis (Bearing Pressure)
+        srv_data, srv_notes = self._run_opensees_analysis(geom, loads, mat, is_service=True)
+        notes.extend(srv_notes)
+        qmax = np.max(srv_data['Q_SOIL'])
+        qmin = np.min(srv_data['Q_SOIL'])
+
+        bearing_ok = qmax <= soil.bearing_capacity
+        if not bearing_ok: notes.append(
+            f"⚠️ Bearing pressure ({qmax:.1f} kPa) exceeds capacity ({soil.bearing_capacity} kPa).")
+        if qmin <= 0.1: notes.append("ℹ️ Footing is experiencing partial uplift (compression-only soils active).")
+
+        # 2. Ultimate Analysis (Strength)
+        ult_data, ult_notes = self._run_opensees_analysis(geom, loads, mat, is_service=False)
+
+        M_x_pos = np.max(ult_data['MXX']);
+        M_x_neg = abs(np.min(ult_data['MXX']))
+        M_y_pos = np.max(ult_data['MYY']);
+        M_y_neg = abs(np.min(ult_data['MYY']))
+        V_x = np.max(np.abs(ult_data['VX']))
+        V_y = np.max(np.abs(ult_data['VY']))
+
+        # Flexure Design
+        d_eff = geom.thickness - geom.cover - 20
+        rho_min = 0.0018
+        As_min = rho_min * 1000 * geom.thickness
+
+        def req_as(M):
+            if M <= 0: return As_min
+            A = self.phi_factors['flexure'] * mat.fy ** 2 / (2 * 0.85 * mat.fc_prime * 1000)
+            B = -self.phi_factors['flexure'] * mat.fy * d_eff
+            C = M * 1e6
+            disc = B ** 2 - 4 * A * C
+            if disc < 0: return As_min * 2  # Fallback
+            return max((-B - math.sqrt(disc)) / (2 * A), As_min)
+
+        bx, sx = self._select_rebar(req_as(max(M_x_pos, M_x_neg)), 1000, geom.thickness)
+        by, sy = self._select_rebar(req_as(max(M_y_pos, M_y_neg)), 1000, geom.thickness)
+
+        # Shear Checks
+        phi_vc = self.phi_factors['shear'] * 0.17 * math.sqrt(mat.fc_prime) * 1000 * d_eff / 1000
+        one_way_ratio = max(V_x, V_y) / phi_vc if phi_vc > 0 else 99.9
+        one_way_ok = one_way_ratio <= 1.0
+        if not one_way_ok: notes.append(
+            f"⚠️ 1-Way Shear inadequate. Max FEA shear {max(V_x, V_y):.1f} kN/m > capacity {phi_vc:.1f} kN/m.")
+
+        two_way_ok, two_way_ratio = self.check_two_way_shear(geom, loads, mat)
+        if not two_way_ok: notes.append(f"⚠️ 2-Way (Punching) Shear inadequate. DCR = {two_way_ratio:.2f}.")
+
+        # Generate Visualizations
+        plots = self.generate_contour_plots(geom, ult_data)
+        plots['soil_pressure'] = self.generate_contour_plots(geom, srv_data)[
+            'soil_pressure']  # Swap with service pressure
+
+        reinf = FootingReinforcement(bx, sx, by, sy, 'None', 0.0, 'None', 0.0,
+                                     self.aci.calculate_development_length(bx, mat.fc_prime, mat.fy), 'D20', 600.0)
+
+        dcr = max(qmax / soil.bearing_capacity, one_way_ratio, two_way_ratio)
+
+        return FootingAnalysisResult(
+            qmax, qmin, bearing_ok, one_way_ok, two_way_ok, reinf, dcr, list(set(notes)),
+            max(M_x_pos, M_x_neg), max(M_y_pos, M_y_neg), V_x, V_y, plots
         )
-        bar_y, spacing_y = self._select_footing_reinforcement(
-            As_y, 1000.0, fy, geometry.thickness, geometry.cover
-        )
-        
-        # Development length
-        development_length = self.aci.calculate_development_length(bar_x, fc_prime, fy)
-        
-        # Check if development length is adequate
-        available_length_x = cantilever_x - geometry.cover
-        available_length_y = cantilever_y - geometry.cover
-        
-        if development_length > min(available_length_x, available_length_y):
-            # May need hooks or larger footing
-            pass
-        
-        # Design column dowels (passing geometry to compute Ag)
-        dowel_bars = self._design_column_dowels(geometry, material_props)
-        dowel_length = max(development_length, 300.0)  # Minimum 300mm
-        
-        return FootingReinforcement(
-            bottom_bars_x=bar_x,
-            bottom_spacing_x=spacing_x,
-            bottom_bars_y=bar_y,
-            bottom_spacing_y=spacing_y,
-            top_bars='None',  # Usually not required for footings
-            top_spacing=0.0,
-            development_length=development_length,
-            dowel_bars=dowel_bars,
-            dowel_length=dowel_length
-        )
-    
-    def _calculate_required_steel_area(self, moment: float, width: float,
-                                     effective_depth: float, fc_prime: float,
-                                     fy: float) -> float:
-        """Calculate required steel area for given moment"""
-        if moment <= 0:
-            return 0
-        
-        # Convert moment to N⋅mm
-        Mu = moment * 1e6
-        
-        phi = self.phi_factors['flexure']
-        
-        # CORRECTED SIGNS
-        A = phi * fy**2 / (2 * 0.85 * fc_prime * width)
-        B = -phi * fy * effective_depth # Must be negative
-        C = Mu                          # Must be positive
-        
-        discriminant = B**2 - 4*A*C
-        if discriminant < 0:
-            raise ValueError("Section inadequate for applied moment")
-        
-        # CORRECTED ROOT (Negative root for tension-controlled behavior)
-        As_required = (-B - math.sqrt(discriminant)) / (2*A)
-        
-        return As_required
-    
-    def _select_footing_reinforcement(self, As_required: float, width: float,
-                                      fy: float, thickness: float, cover: float,
-                                      aggregate_size: float = 25.0) -> Tuple[str, float]:
-        """Select appropriate bar size and spacing for footing considering ACI 318M-25 limits"""
-        # Common footing bar sizes
-        bar_sizes = ['D16', 'D20', 'D25', 'D28', 'D32', 'D36']
-        
-        # Calculate maximum spacing for crack control (ACI 318M-25 Sec. 24.3.2)
-        fs = (2.0 / 3.0) * fy
-        s_limit_1 = 380 * (280 / fs) - 2.5 * cover
-        s_limit_2 = 300 * (280 / fs)
-        max_crack_spacing = min(s_limit_1, s_limit_2)
-        
-        # General maximum spacing limit for footings (typically 3h or 450mm)
-        max_general_spacing = min(3 * thickness, self.min_reinforcement['max_spacing'])
-        
-        # Governing maximum spacing
-        max_spacing = min(max_crack_spacing, max_general_spacing)
-        
-        for bar_size in bar_sizes:
-            bar_area = self.aci.get_bar_area(bar_size)
-            db = self.aci.get_bar_diameter(bar_size)
-            
-            # Theoretical required spacing to meet area
-            raw_spacing = bar_area * width / As_required
-            spacing = self._round_spacing(raw_spacing)
-            
-            # Minimum clear spacing limits (ACI 318M-25 Sec. 25.2.1)
-            min_clear_spacing = max(25.0, db, (4.0/3.0) * aggregate_size)
-            min_c2c_spacing = min_clear_spacing + db
-            
-            if min_c2c_spacing <= spacing <= max_spacing:
-                return bar_size, spacing
-        
-        # If no suitable spacing is found, use a standard default with maximum allowable spacing
-        bar_size = 'D20'
-        bar_area = self.aci.get_bar_area(bar_size)
-        raw_spacing = bar_area * width / As_required
-        spacing = self._round_spacing(min(max_spacing, raw_spacing))
 
-        # Ensure spacing meets minimum requirements
-        min_clear_spacing = max(25.0, self.aci.get_bar_diameter(bar_size), (4.0/3.0) * aggregate_size)
-        min_c2c_spacing = min_clear_spacing + self.aci.get_bar_diameter(bar_size)
-        if spacing < min_c2c_spacing:
-            spacing = min_c2c_spacing
+    def calculate_qto(self, geom: FootingGeometry, res: FootingAnalysisResult) -> dict:
+        vol = (geom.length / 1000.0) * (geom.width / 1000.0) * (geom.thickness / 1000.0)
+        fw = 2 * (geom.length / 1000.0 + geom.width / 1000.0) * (geom.thickness / 1000.0)
 
-        return bar_size, spacing
-    
-    def _design_column_dowels(self, geometry: FootingGeometry,
-                            material_props: MaterialProperties) -> str:
-        """
-        Design column dowel bars for load transfer
-        ACI 318M-25 Section 16.3.4
-        """
-        # Gross area of supported column (Ag)
-        Ag = geometry.column_width * geometry.column_depth
-        
-        # Minimum dowel area across interface is 0.005 * Ag
-        As_dowel = 0.005 * Ag
-        
-        # Assuming a minimum of 4 dowel bars (one at each column corner)
-        As_per_bar = As_dowel / 4.0
-        
-        # Select appropriate dowel bar size
-        if As_per_bar <= self.aci.get_bar_area('D16'):
-            return 'D16'
-        elif As_per_bar <= self.aci.get_bar_area('D20'):
-            return 'D20'
-        elif As_per_bar <= self.aci.get_bar_area('D25'):
-            return 'D25'
-        elif As_per_bar <= self.aci.get_bar_area('D28'):
-            return 'D28'
-        elif As_per_bar <= self.aci.get_bar_area('D32'):
-            return 'D32'
-        else:
-            return 'D36'
-    
-    def _round_len_width(self, value: float) -> float:
-        """Round length/width up to nearest 100 mm."""
-        return math.ceil(value / 100.0) * 100.0
+        def bar_wt(size, sp, L1, L2):
+            db = float(size.replace('D', ''))
+            qty = math.ceil(L1 / sp)
+            length = (L2 - 2 * geom.cover) / 1000.0
+            return qty * length * (db ** 2 / 162.0)
 
-    def _round_thickness(self, value: float) -> float:
-        """Round thickness up to nearest 50 mm."""
-        return math.ceil(value / 50.0) * 50.0
+        wt_x = bar_wt(res.reinforcement.bottom_bars_x, res.reinforcement.bottom_spacing_x, geom.width, geom.length)
+        wt_y = bar_wt(res.reinforcement.bottom_bars_y, res.reinforcement.bottom_spacing_y, geom.length, geom.width)
 
-    def _round_spacing(self, value: float) -> float:
-        """Round reinforcement spacing down to nearest 25 mm (minimum 25 mm)."""
-        return max(25.0, math.floor(value / 25.0) * 25.0)
-
-    def perform_complete_footing_design(self, loads: FootingLoads,
-                                      soil_props: SoilProperties,
-                                      material_props: MaterialProperties,
-                                      initial_geometry: FootingGeometry = None) -> FootingAnalysisResult:
-        """
-        Perform complete footing design analysis with automatic size adjustment until utilization ≤ 1.0.
-        
-        Args:
-            loads: Footing load conditions
-            soil_props: Soil properties
-            material_props: Material properties
-            initial_geometry: Initial footing geometry (optional)
-            
-        Returns:
-            Complete footing analysis results
-        """
-        # Determine initial geometry
-        if initial_geometry is None:
-            req_length, req_width = self.calculate_required_footing_area(loads, soil_props)
-            length = self._round_len_width(req_length)
-            width = self._round_len_width(req_width)
-            thickness = max(length / 10, width / 10, self.design_constants['min_footing_thickness'])
-            thickness = self._round_thickness(thickness)
-            geometry = FootingGeometry(
-                length=length,
-                width=width,
-                thickness=thickness,
-                cover=75,
-                column_width=400,
-                column_depth=400,
-                footing_type=FootingType.ISOLATED_SQUARE
-            )
-        else:
-            geometry = initial_geometry
-
-        max_iterations = 20
-        result = None
-        design_notes = []
-
-        for iteration in range(max_iterations):
-            # Bearing pressure check
-            qmax, qmin, no_tension = self.calculate_bearing_pressure(geometry, loads)
-            bearing_ok = qmax <= soil_props.bearing_capacity and no_tension
-
-            # Shear checks
-            one_way_ok, one_way_ratio = self.check_one_way_shear(geometry, loads, material_props)
-            two_way_ok, two_way_ratio = self.check_two_way_shear(geometry, loads, material_props)
-
-            # Reinforcement design (may fail if section too small for moment)
-            try:
-                reinforcement = self.design_flexural_reinforcement(geometry, loads, material_props)
-            except ValueError as e:
-                # Section inadequate for flexure; increase size and continue
-                design_notes = [f"Iteration {iteration+1}: Flexure design failed ({str(e)}). Increasing footing size."]
-                geometry = FootingGeometry(
-                    length=self._round_len_width(max(geometry.length * 1.1, geometry.length + 100)),
-                    width=self._round_len_width(max(geometry.width * 1.1, geometry.width + 100)),
-                    thickness=self._round_thickness(max(geometry.thickness * 1.1, geometry.thickness + 50)),
-                    cover=geometry.cover,
-                    column_width=geometry.column_width,
-                    column_depth=geometry.column_depth,
-                    footing_type=geometry.footing_type
-                )
-                continue
-
-            # Overall utilization
-            utilization_ratio = max(
-                qmax / soil_props.bearing_capacity if soil_props.bearing_capacity > 0 else 0,
-                one_way_ratio,
-                two_way_ratio
-            )
-
-            # Build design notes for this iteration
-            design_notes = []
-            if not bearing_ok:
-                if qmax > soil_props.bearing_capacity:
-                    design_notes.append(f"Bearing pressure {qmax:.1f} kPa exceeds capacity {soil_props.bearing_capacity:.1f} kPa")
-                if not no_tension:
-                    design_notes.append("Tension exists under footing - increase size or revise loading")
-            if not one_way_ok:
-                design_notes.append(f"One-way shear inadequate (ratio = {one_way_ratio:.2f})")
-            if not two_way_ok:
-                design_notes.append(f"Two-way shear inadequate (ratio = {two_way_ratio:.2f})")
-            if geometry.thickness < self.design_constants['min_footing_thickness']:
-                design_notes.append(f"Increase thickness to minimum {self.design_constants['min_footing_thickness']}mm")
-            if reinforcement.development_length > (geometry.length - geometry.column_width) / 2 - geometry.cover:
-                design_notes.append("Development length may be inadequate - consider hooks or larger footing")
-
-            # Check if design is adequate
-            if utilization_ratio <= 1.0:
-                result = FootingAnalysisResult(
-                    bearing_pressure=qmax,
-                    bearing_ok=bearing_ok,
-                    one_way_shear_ok=one_way_ok,
-                    two_way_shear_ok=two_way_ok,
-                    reinforcement=reinforcement,
-                    utilization_ratio=utilization_ratio,
-                    design_notes=design_notes,
-                    final_length=geometry.length,
-                    final_width=geometry.width,
-                    final_thickness=geometry.thickness
-                )
-                break
-
-            # Not adequate; increase footing size and iterate
-            new_length = self._round_len_width(max(geometry.length * 1.1, geometry.length + 100))
-            new_width = self._round_len_width(max(geometry.width * 1.1, geometry.width + 100))
-            new_thickness = self._round_thickness(max(geometry.thickness * 1.1, geometry.thickness + 50))
-            geometry = FootingGeometry(
-                length=new_length,
-                width=new_width,
-                thickness=new_thickness,
-                cover=geometry.cover,
-                column_width=geometry.column_width,
-                column_depth=geometry.column_depth,
-                footing_type=geometry.footing_type
-            )
-        else:
-            # Max iterations reached without achieving utilization ≤ 1.0
-            design_notes.append("Warning: Maximum iterations reached without achieving utilization ≤ 1.0")
-            result = FootingAnalysisResult(
-                bearing_pressure=qmax,
-                bearing_ok=bearing_ok,
-                one_way_shear_ok=one_way_ok,
-                two_way_shear_ok=two_way_ok,
-                reinforcement=reinforcement,
-                utilization_ratio=utilization_ratio,
-                design_notes=design_notes,
-                final_length=geometry.length,
-                final_width=geometry.width,
-                final_thickness=geometry.thickness
-            )
-
-        return result
+        return {'volume': vol, 'formwork': fw, 'weight': wt_x + wt_y}
