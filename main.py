@@ -48,7 +48,7 @@ def index(request: air.Request):
                     # Slab Designer Card (Now Active!)
                     air.Div(
                         air.H3("RC Slab Designer"),
-                        air.P("v0.1 developer preview. Expect bugs, wrong results and/or missing features. Refinements ongoing.", style="color: var(--text-muted); margin-bottom: 24px;"),
+                        air.P("v0.4 alpha. Expect bugs, wrong results and/or missing features. Refinements ongoing.", style="color: var(--text-muted); margin-bottom: 24px;"),
                         air.A("Launch", href="/slab", class_="button", style="width: 100%; box-sizing: border-box;"),
                         class_="card"
                     ),
