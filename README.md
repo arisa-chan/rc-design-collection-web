@@ -7,7 +7,8 @@
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Beta Module](https://img.shields.io/badge/Beam_Design-v0.8_Beta-yellow)]()
 [![Beta Module](https://img.shields.io/badge/Column_Design-v0.8_Beta-yellow)]()
-[![Alpha Module](https://img.shields.io/badge/Slab_Design-v0.4_Alpha-yellow)]()
+[![Beta Module](https://img.shields.io/badge/Slab_Design-v0.8_Beta-yellow)]()
+[![Beta Module](https://img.shields.io/badge/Footing_Design-v0.8_Beta-yellow)]()
 
 A powerful Python web application built with the Air web framework for designing reinforced concrete members in accordance with **ACI 318M-25** provisions. 
 
@@ -21,34 +22,53 @@ The web application can be accessed at [https://rc-design-collection.onrender.co
 *Note: This module is currently in beta. Please try it out and report any feedback or issues!*
 
 * **Detailed Elevation Views:** Visual representations of beam reinforcements.
-* **Serviceability Checks:** Immediate live load and long-term deflection checks.
-* **Reinforcement Details & Capacity:** * Automatically considers constructability requirements.
-  * Automatically applies seismic detailing when required.
+* **Serviceability Checks:** Immediate live load and long-term deflection checks using ACI 318M-25 effective moment of inertia (Ie) method.
+* **Reinforcement Details & Capacity:** 
+  * Automatically considers constructability requirements.
+  * Automatically applies seismic detailing when required (SMF/IMF/OMF).
+  * Unification engine syncs stirrup legs, main bars, and side bars across all zones.
 * **Quantity Takeoff:** Accurately considers hooks, bends, splices, and standard commercial bar lengths for precise material estimation.
 
 ### 2. RC Column Design `(v0.8 Beta)`
 *Note: This module is currently in beta. Please try it out and report any feedback or issues!*
 
 * **Detailed Elevation Views:** Visual representations of column reinforcements.
-* **Reinforcement Details & Capacity:** * Automatically checks constructability requirements.
+* **Reinforcement Details & Capacity:** 
+  * Automatically checks constructability requirements.
   * Adjusts for seismic detailing when applicable.
   * Includes checks for strong-column, weak-beam (SCWB) and joint shear.
 * **Quantity Takeoff:** Accurately considers hooks, bends, splices, and standard commercial bar lengths for precise material estimation.
 
-### 3. RC Slab Design `(v0.4 Alpha)`
-> [!WARNING]
-> This module is currently in alpha. Refinements are ongoing, so please expect bugs, wrong results, missing features and sudden changes.
+### 3. RC Slab Design `(v0.8 Beta)`
+*Note: This module is currently in beta. Please try it out and report any feedback or issues!*
 
 * **Detailed Plan Views:** Visual representations of slab reinforcements.
-* **Reinforcement Details & Capacity:** * Automatically checks constructability requirements.
-  * Using finite element analysis (FEA) for more accurate analysis.
-* **Contour Plots:** Deflections, moments, shears in slabs.
+* **Reinforcement Details & Capacity:** 
+  * Automatically checks constructability requirements.
+  * Using finite element analysis (FEA) with OpenSees ShellMITC4 elements for accurate analysis.
+  * Bottom and top bar size selection (D10–D36).
+* **Contour Plots:** Deflections, moments, shears, and required reinforcement (As_bot / As_top).
+* **Quantity Takeoff & Cutting List:** Concrete volume, formwork area, rebar weight, and reinforcement cutting list with optimized commercial bar lengths.
+
+### 4. RC Isolated Footing Design `(v0.8 Beta)`
+*Note: This module is currently in beta. Please try it out and report any feedback or issues!*
+
+* **FEA-Based Analysis:** OpenSees ShellMITC4 plate elements on elastic Winkler foundation for realistic soil-structure interaction.
+* **Design Checks:**
+  * Soil bearing pressure (gross and net, with surcharge).
+  * One-way and two-way (punching) shear at critical sections per ACI 318M-25.
+  * Flexural design using Wood-Armer moments at column face.
+  * Overturning stability and sliding checks.
+* **Reinforcement Details:** Bottom and top reinforcement in both directions with bar size selection (D10–D36). Axial-only cases automatically suppress top reinforcement.
+* **Contour Plots:** Settlement, soil pressure, moments (Mxx, Myy, Mxy), shears (Vx, Vy), and required reinforcement (As_bot / As_top).
+* **Quantity Takeoff & Cutting List:** Concrete volume, formwork area, rebar weight, and reinforcement cutting list with optimized commercial bar lengths.
+* **Soil Overburden & Surcharge:** Dead load and live load surcharge inputs applied as uniform pressure on the footing.
 
 ## 🛠️ Tech Stack
 
 * **Language:** [Python](https://www.python.org/)
 * **Web Framework:** [Air](https://airwebframework.org/)
-* **Calculation module:** [ACI 318M-25 library](https://github.com/arisa-chan/aci-318m-25) for member designs, [`openseespy`](https://github.com/zhuminjie/OpenSeesPy) for slab analysis, [`matplotlib`](https://matplotlib.org/) for slab contour plot visualization
+* **Calculation module:** [ACI 318M-25 library](https://github.com/arisa-chan/aci-318m-25) for member designs, [`openseespy`](https://github.com/zhuminjie/OpenSeesPy) for slab and footing analysis, [`matplotlib`](https://matplotlib.org/) for contour plot visualization
 * **Dependency Management:** `uv` (via `uv.lock` & `pyproject.toml`)
 
 ## 💻 Installation & Local Setup
@@ -63,8 +83,8 @@ cd rc-design-collection-web
 
 **2. Set up a virtual environment (Optional but recommended)**
 ```bash
-python -m venv venv
-source venv/bin/activate  # On Windows use: venv\Scripts\activate
+python -m venv .venv
+source .venv/bin/activate  # On Windows use: .venv\Scripts\activate
 ```
 
 **3. Install dependencies**
