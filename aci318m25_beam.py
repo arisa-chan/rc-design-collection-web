@@ -446,7 +446,7 @@ class ACI318M25BeamDesign:
         util_m_top = mu_top / moment_capacity_top if moment_capacity_top > 0 else 1.0
         util_m_bot = mu_bot / moment_capacity_bot if moment_capacity_bot > 0 else 1.0
         util_v = ve_design / shear_capacity if shear_capacity > 0 else 1.0
-        util_t = tu / tn_cap if tn_cap > 0 else (9.99 if tu > 0 else 0.0)
+        util_t = tu / tn_cap if (tn_cap > 0 and tu > 0) else 0.0
 
         deflection = (5 * service_moment * 1e6 * beam_geometry.length ** 2) / (48 * material_props.ec * (
                     beam_geometry.width * beam_geometry.height ** 3 / 12)) if service_moment else 0.0

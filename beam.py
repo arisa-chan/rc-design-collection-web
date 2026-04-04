@@ -10,7 +10,7 @@ import pdfkit
 from aci318m25 import ConcreteStrengthClass, ReinforcementGrade, MaterialProperties
 from aci318m25_complete import ACI318M25MemberLibrary
 from aci318m25_beam import ACI318M25BeamDesign, BeamGeometry, BeamType, SeismicDesignCategory, FrameSystem
-from shared import expressive_layout
+from shared import blueprint_layout
 
 base_aci_lib = ACI318M25MemberLibrary()
 
@@ -397,7 +397,8 @@ def render_section_results(title, result, width, height, cover):
                    air.Span(f"{result.shear_capacity:.1f} / {result.capacity_shear_ve:.1f} kN", class_="data-value")),
             air.Li(air.Strong("Torsion (φTn)"), air.Span(f"{result.torsion_capacity:.1f} kN·m", class_="data-value")),
             air.Li(air.Strong("DCR"),
-                   air.Span(f"{result.utilization_ratio:.2f}", class_="data-value", style=f"color: {status_color};"))
+                   air.Span(f"{result.utilization_ratio:.2f} {'≤' if result.utilization_ratio <= 1.0 else '>'} 1.00",
+                            class_=f"status-badge {'pass' if result.utilization_ratio <= 1.0 else 'fail'}"))
         ),
         air.H4("Reinforcements"),
         air.Ul(
@@ -442,7 +443,7 @@ def setup_beam_routes(app):
 
         bar_opts = ["D10", "D12", "D16", "D20", "D25", "D28", "D32", "D36"]
 
-        return expressive_layout(
+        return blueprint_layout(
             air.Header(
                 air.A("← Dashboard", href="/", class_="back-link no-print"),
                 air.H1("RC Beam Designer"),
@@ -558,7 +559,7 @@ def setup_beam_routes(app):
         try:
             data = BeamDesignModel(**form_data)
         except Exception as e:
-            error_html = str(expressive_layout(
+            error_html = str(blueprint_layout(
                 air.Header(
                     air.A("← Go Back", href="/beam", class_="back-link no-print"),
                     air.H1("Calculation Error"),
@@ -672,7 +673,7 @@ def setup_beam_routes(app):
                 r.reinforcement.side_area = get_area(max_side_bars)
 
             # 5. Recalculate Final Capacities for Unified Sections
-            def recalc(r, is_support, mu_top, mu_bot, tu, gravity_v):
+            def recalc(r, is_support, mu_top, mu_bot, vu, tu, gravity_v):
                 phi_f = custom_lib.beam_design.phi_factors['flexure_tension_controlled']
                 phi_v = custom_lib.beam_design.phi_factors['shear']
                 phi_t = custom_lib.beam_design.phi_factors['torsion']
@@ -687,28 +688,35 @@ def setup_beam_routes(app):
                                                                                             r.reinforcement.stirrups,
                                                                                             actual_s)
 
-                Vc = 0.17 * math.sqrt(mat_props.fc_prime) * beam_geom.width * beam_geom.effective_depth
-                if beam_geom.frame_system == FrameSystem.SPECIAL and (
-                        r.capacity_shear_ve * 1000 - gravity_v * 1000) > 0.5 * (r.capacity_shear_ve * 1000):
-                    Vc = 0.0
+                # Compute Vc for torsion interaction — Vc = 0 for special moment frames
+                # when earthquake shear component ≥ 0.5 * Vu (ACI 318M-25 §18.6.5.2)
+                Vc = 0.17 * math.sqrt(mat_props.fc_prime) * beam_geom.width * beam_geom.effective_depth  # N
+                if beam_geom.frame_system == FrameSystem.SPECIAL:
+                    ve_component = r.capacity_shear_ve - gravity_v  # kN
+                    if ve_component >= 0.5 * vu:  # both in kN
+                        Vc = 0.0
 
                 if r.reinforcement.torsion_required:
                     r.torsion_capacity = phi_t * custom_lib.beam_design._calculate_torsion_capacity(beam_geom,
                                                                                                     mat_props,
                                                                                                     r.reinforcement.stirrups,
                                                                                                     actual_s,
-                                                                                                    r.capacity_shear_ve * 1000,
-                                                                                                    Vc)
+                                                                                                    r.capacity_shear_ve * 1000,  # Ve in N
+                                                                                                    Vc)  # Vc in N
+                else:
+                    r.torsion_capacity = 0.0
 
+                # All demands and capacities in consistent units:
+                #   moments: kN-m, shear: kN, torsion: kN-m
                 util_m_top = mu_top / r.moment_capacity_top if r.moment_capacity_top > 0 else 1.0
                 util_m_bot = mu_bot / r.moment_capacity_bot if r.moment_capacity_bot > 0 else 1.0
-                util_v = r.capacity_shear_ve / r.shear_capacity if r.shear_capacity > 0 else 1.0
-                util_t = tu / r.torsion_capacity if r.torsion_capacity > 0 else (9.99 if tu > 0 else 0.0)
+                util_v = vu / r.shear_capacity if r.shear_capacity > 0 else 1.0
+                util_t = tu / r.torsion_capacity if (r.torsion_capacity > 0 and tu > 0) else 0.0
                 r.utilization_ratio = max(util_m_top, util_m_bot, util_v, util_t)
 
-            recalc(res_left, True, data.left_mu_neg, data.left_mu_pos, data.left_tu, data.left_vg)
-            recalc(res_mid, False, data.mid_mu_neg, data.mid_mu_pos, data.mid_tu, 0.0)
-            recalc(res_right, True, data.right_mu_neg, data.right_mu_pos, data.right_tu, data.right_vg)
+            recalc(res_left, True, data.left_mu_neg, data.left_mu_pos, data.left_vu, data.left_tu, data.left_vg)
+            recalc(res_mid, False, data.mid_mu_neg, data.mid_mu_pos, data.mid_vu, data.mid_tu, 0.0)
+            recalc(res_right, True, data.right_mu_neg, data.right_mu_pos, data.right_vu, data.right_tu, data.right_vg)
             # ----- END UNIFICATION ENGINE -----
 
             vol_concrete, area_formwork, total_kg, rebar_rows = calculate_qto(beam_geom, res_left, res_mid, res_right)
@@ -742,11 +750,11 @@ def setup_beam_routes(app):
 
             def calc_Ie(M_applied):
                 if M_applied <= 0: return Ig
-                limit_m = (2.0 / 3.0) * M_cr
-                if M_applied <= limit_m:
+                if M_applied <= M_cr:
                     return Ig
-                ratio = limit_m / M_applied
-                Ie_calc = Icr / (1.0 - (ratio ** 2) * (1.0 - Icr / Ig))
+                ratio = M_cr / M_applied
+                # ACI 318M-25 §24.2.3.5a: Ie = (Mcr/Ma)³ Ig + [1-(Mcr/Ma)³] Icr ≤ Ig
+                Ie_calc = (ratio ** 3) * Ig + (1.0 - ratio ** 3) * Icr
                 return max(Icr, min(Ie_calc, Ig))
 
             Ie_d = calc_Ie(M_d)
@@ -840,15 +848,21 @@ def setup_beam_routes(app):
                     air.H2("Serviceability Checks"),
                     generate_beam_elevation_css(data.length, data.height, res_left, res_mid, res_right),
                     air.Div(
-                        air.Div(air.P(air.Strong("Immediate live load deflection = "), air.Span(f"{delta_live:.2f} mm",
-                                                                                                style=f"color: {status_live}; font-weight: 700;"),
-                                      f" (Limit: L/360 = {lim_live:.1f} mm)"),
-                                style=f"padding: 16px; border-radius: 8px; border: 1px solid {'#bbf7d0' if delta_live <= lim_live else '#fecaca'}; background: {'#f0fdf4' if delta_live <= lim_live else '#fef2f2'}; margin-bottom: 12px;"),
-                        air.Div(air.P(air.Strong("Long-term deflection = "), air.Span(f"{delta_long:.2f} mm",
-                                                                                      style=f"color: {status_long}; font-weight: 700;"),
-                                      f" (Limit: L/{int(lim_long_divisor)} = {lim_long:.1f} mm)"),
-                                style=f"padding: 16px; border-radius: 8px; border: 1px solid {'#bbf7d0' if delta_long <= lim_long else '#fecaca'}; background: {'#f0fdf4' if delta_long <= lim_long else '#fef2f2'};"),
-
+                        air.Div(
+                            air.P(air.Strong("Immediate live load deflection = "),
+                                  air.Span(f"{delta_live:.2f} mm",
+                                           style=f"color: {status_live}; font-weight: 700;"),
+                                  air.Span(
+                                      f" {delta_live:.2f} mm {'≤' if delta_live <= lim_live else '>'} L/360 = {lim_live:.1f} mm",
+                                      class_=f"status-badge {'pass' if delta_live <= lim_live else 'fail'}")),
+                            style=f"padding: 16px; border-radius: 8px; border: 1px solid {'#bbf7d0' if delta_live <= lim_live else '#fecaca'}; background: {'#f0fdf4' if delta_live <= lim_live else '#fef2f2'}; margin-bottom: 12px;"),
+                        air.Div(
+                            air.P(air.Strong("Long-term deflection = "), air.Span(f"{delta_long:.2f} mm",
+                                                                                  style=f"color: {status_long}; font-weight: 700;"),
+                                  air.Span(
+                                      f" {delta_long:.2f} mm {'≤' if delta_long <= lim_long else '>'} L/{int(lim_long_divisor)} = {lim_long:.1f} mm",
+                                      class_=f"status-badge {'pass' if delta_long <= lim_long else 'fail'}")),
+                            style=f"padding: 16px; border-radius: 8px; border: 1px solid {'#bbf7d0' if delta_long <= lim_long else '#fecaca'}; background: {'#f0fdf4' if delta_long <= lim_long else '#fef2f2'};"),
                         air.Div(
                             air.P(air.Strong("Some values: "),
                                   f"M_cr = {M_cr:.1f} kN-m | I_g = {Ig / 1e6:.0f} × 10⁶ mm⁴ | I_e (total) = {Ie_tot / 1e6:.0f} × 10⁶ mm⁴",
@@ -885,7 +899,7 @@ def setup_beam_routes(app):
                 )
             )
 
-            full_html_layout = str(expressive_layout(
+            full_html_layout = str(blueprint_layout(
                 air.Header(
                     air.A("← Edit Inputs", href="/beam", class_="back-link no-print"),
                     air.H1("RC Beam Designer"),
@@ -900,7 +914,7 @@ def setup_beam_routes(app):
             return resp
 
         except Exception as e:
-            error_html = str(expressive_layout(
+            error_html = str(blueprint_layout(
                 air.Header(
                     air.A("← Go Back", href="/beam", class_="back-link no-print"),
                     air.H1("Calculation Error"),

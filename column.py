@@ -11,7 +11,7 @@ from aci318m25_column import (
     ACI318M25ColumnDesign, ColumnGeometry, ColumnLoads, ColumnShape, ColumnType,
     LoadCondition, SeismicDesignCategory, FrameSystem, JointBeamElement, JointColumnElement
 )
-from shared import expressive_layout
+from shared import blueprint_layout
 
 base_aci_lib = ACI318M25MemberLibrary()
 
@@ -305,11 +305,13 @@ def build_scwb_element(d_res, title):
         air.H5(title, style="margin-bottom: 8px; color: #4b5563; font-size: 15px;"),
         air.Ul(
             air.Li(air.Strong("ΣMnc/ΣMnb"),
-                   air.Span(f"{d_res.ratio_scwb:.2f} ≥ 1.2", style=f"color: {c_scwb}; font-weight: bold;")),
-            air.Li(air.Strong("Factored shear Vj"), f"{d_res.vj_u:.1f} kN"),
-            air.Li(air.Strong("Joint capacity ɸVnj"), f"{d_res.phi_vj:.1f} kN (γ = {d_res.gamma})"),
+                   air.Span(f"{d_res.ratio_scwb:.2f} {'≥' if d_res.ratio_scwb >= 1.2 else '<'} 1.2",
+                            class_=f"status-badge {'pass' if d_res.ratio_scwb >= 1.2 else 'fail'}")),
+            air.Li(air.Strong("Factored shear Vj"), air.Span(f"{d_res.vj_u:.1f} kN", class_="data-value")),
+            air.Li(air.Strong("Joint capacity ɸVnj"), air.Span(f"{d_res.phi_vj:.1f} kN (γ = {d_res.gamma})", class_="data-value")),
             air.Li(air.Strong("Joint shear DCR"),
-                   air.Span(f"{d_res.ratio_vj:.2f} ≤ 1.0", style=f"color: {c_vj}; font-weight: bold;"))
+                   air.Span(f"{d_res.ratio_vj:.2f} {'≤' if d_res.ratio_vj <= 1.0 else '>'} 1.00",
+                            class_=f"status-badge {'pass' if d_res.ratio_vj <= 1.0 else 'fail'}"))
         )
     )
 
@@ -328,7 +330,7 @@ def setup_column_routes(app):
         tie_opts = ["D10", "D12", "D16"]
         js_toggle = "var s=document.getElementsByName('sdc')[0].value; var f=document.getElementsByName('frame_system')[0].value; document.getElementById('seismic_joint_panel').style.display = ((s==='D'||s==='E'||s==='F')&&f==='special') ? 'block' : 'none';"
 
-        return expressive_layout(
+        return blueprint_layout(
             air.Header(air.A("← Dashboard", href="/", class_="back-link no-print"), air.H1("RC Column Designer"),
                        air.P("in accordance with ACI 318M-25", class_="subtitle"),
                        class_="module-header"),
@@ -463,7 +465,7 @@ def setup_column_routes(app):
         try:
             data = ColumnDesignModel(**form_data)
         except Exception as e:
-            return AirResponse(content=str(expressive_layout(
+            return AirResponse(content=str(blueprint_layout(
                 air.Main(air.Div(air.H2("Validation Failed", style="color: #DC2626;"), air.P(str(e)), class_="card")))),
                                media_type="text/html")
 
@@ -636,12 +638,18 @@ def setup_column_routes(app):
                     air.Div(
                         air.H3("DCR"),
                         air.Ul(
-                            air.Li(air.Strong("P-M interaction"),
-                                   air.Span(f"{res.capacity.interaction_ratio:.2f}", class_="data-value",
-                                            style=f"color: {'#16A34A' if res.capacity.interaction_ratio <= 1.0 else '#DC2626'}; font-weight: bold;")),
-                            air.Li(air.Strong("Shear (x / y)"),
-                                   air.Span(f"{res.shear_utilization_x:.2f} / {res.shear_utilization_y:.2f}",
-                                            class_="data-value")),
+                            air.Li(
+                                air.Strong("P-M interaction"),
+                                air.Span(
+                                    f"{res.capacity.interaction_ratio:.2f} {'≤' if res.capacity.interaction_ratio <= 1.0 else '>'} 1.00",
+                                    class_=f"status-badge {'pass' if res.capacity.interaction_ratio <= 1.0 else 'fail'}"),
+                            ),
+                            air.Li(
+                                air.Strong("Shear (x / y)"),
+                                air.Span(
+                                    f"{res.shear_utilization_x:.2f} / {res.shear_utilization_y:.2f}",
+                                    class_=f"status-badge {'pass' if res.shear_utilization_x <= 1.0 and res.shear_utilization_y <= 1.0 else 'fail'}"),
+                            ),
                         ),
                         air.H3("Reinforcement Details", style="margin-top: 24px;"),
                         air.Ul(
@@ -672,7 +680,7 @@ def setup_column_routes(app):
                         )
             )
 
-            resp = AirResponse(content=str(expressive_layout(
+            resp = AirResponse(content=str(blueprint_layout(
                 air.Header(air.A("← Edit Inputs", href="/column", class_="back-link no-print"),
                            air.H1("RC Column Designer"),
                        air.P("in accordance with ACI 318M-25", class_="subtitle"), class_="module-header"), report_content)),
@@ -681,6 +689,6 @@ def setup_column_routes(app):
             return resp
 
         except Exception as e:
-            return AirResponse(content=str(expressive_layout(
+            return AirResponse(content=str(blueprint_layout(
                 air.Main(air.Div(air.H2("Validation Failed", style="color: #DC2626;"), air.P(str(e)), class_="card")))),
                                media_type="text/html")

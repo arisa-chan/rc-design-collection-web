@@ -10,7 +10,7 @@ from aci318m25_slab import (
     ACI318M25SlabDesign, SlabGeometry, SlabLoads,
     LoadPattern, EdgeCondition, EdgeSupport, EdgeContinuity
 )
-from shared import expressive_layout
+from shared import blueprint_layout
 
 
 class SlabDesignModel(BaseModel):
@@ -59,6 +59,8 @@ class SlabDesignModel(BaseModel):
 
     fc_prime: float = AirField(default=28.0)
     fy: float = AirField(default=420.0)
+    bottom_bar_size: str = AirField(default="D12")
+    top_bar_size: str = AirField(default="D12")
 
     superimposed_dead: float = AirField(default=1.2)
     live_load: float = AirField(default=4.8)
@@ -72,43 +74,43 @@ def render_edge_input(edge_name: str, prefix: str, data: SlabDesignModel):
     return air.Div(
         air.H4(f"{edge_name} Edge", style="margin-top: 0; margin-bottom: 8px; color: #4b5563; font-size: 15px;"),
         air.Div(
-            air.Div(air.Label("Support Type"), air.Select(
-                air.Option("Wall", value="wall", selected=(sup_val == "wall")),
-                air.Option("Beam", value="beam", selected=(sup_val == "beam")),
-                air.Option("Column (Ends Only)", value="column", selected=(sup_val == "column")),
-                air.Option("None (Free Edge)", value="none", selected=(sup_val == "none")),
+            air.Div(air.Label("Support type"), air.Select(
+                air.Option("wall", value="wall", selected=(sup_val == "wall")),
+                air.Option("beam", value="beam", selected=(sup_val == "beam")),
+                air.Option("columns at ends", value="column", selected=(sup_val == "column")),
+                air.Option("free end", value="none", selected=(sup_val == "none")),
                 name=f"{prefix}_support", onchange=js_toggle
             ), class_="form-group"),
-            air.Div(air.Label("Continuity"), air.Select(
-                air.Option("Continuous", value="continuous",
+            air.Div(air.Label("Continuous edge?"), air.Select(
+                air.Option("yes", value="continuous",
                            selected=(getattr(data, f"{prefix}_cont") == "continuous")),
-                air.Option("Discontinuous", value="discontinuous",
+                air.Option("no", value="discontinuous",
                            selected=(getattr(data, f"{prefix}_cont") == "discontinuous")),
                 name=f"{prefix}_cont"
             ), class_="form-group"),
             class_="grid-2"
         ),
         air.Div(
-            air.Label("Wall Thickness (mm)"),
+            air.Label("Wall thickness (mm)"),
             air.Input(type="number", name=f"{prefix}_wall_t", value=str(getattr(data, f"{prefix}_wall_t")), step="any"),
             id=f"{prefix}_wall", style=f"display: {'block' if sup_val == 'wall' else 'none'}; margin-top: 8px;",
             class_="form-group"
         ),
         air.Div(
-            air.Div(air.Label("Beam Width, b (mm)"),
+            air.Div(air.Label("Beam width (mm)"),
                     air.Input(type="number", name=f"{prefix}_beam_b", value=str(getattr(data, f"{prefix}_beam_b")),
                               step="any"), class_="form-group"),
-            air.Div(air.Label("Beam Depth, h (mm)"),
+            air.Div(air.Label("Beam depth (mm)"),
                     air.Input(type="number", name=f"{prefix}_beam_h", value=str(getattr(data, f"{prefix}_beam_h")),
                               step="any"), class_="form-group"),
             id=f"{prefix}_beam", class_="grid-2",
             style=f"display: {'flex' if sup_val == 'beam' else 'none'}; margin-top: 8px; gap: 16px;"
         ),
         air.Div(
-            air.Div(air.Label("Col. Dim X, cx (mm)"),
+            air.Div(air.Label("Column dimension along x (mm)"),
                     air.Input(type="number", name=f"{prefix}_col_cx", value=str(getattr(data, f"{prefix}_col_cx")),
                               step="any"), class_="form-group"),
-            air.Div(air.Label("Col. Dim Y, cy (mm)"),
+            air.Div(air.Label("Column dimension along y (mm)"),
                     air.Input(type="number", name=f"{prefix}_col_cy", value=str(getattr(data, f"{prefix}_col_cy")),
                               step="any"), class_="form-group"),
             id=f"{prefix}_col", class_="grid-2",
@@ -190,8 +192,8 @@ def render_contour_viewer(contours_dict):
     if not contours_dict: return air.Div()
 
     options = [
-        ("deflection", "Deflection"), ("mxx", "Mxx (Span X)"), ("myy", "Myy (Span Y)"),
-        ("mxy", "Mxy (Twisting)"), ("mx_wa", "Wood-Armer Mx (Bot)"), ("my_wa", "Wood-Armer My (Bot)"),
+        ("deflection", "Deflection"), ("mxx", "Bending Mxx"), ("myy", "Bending Myy"),
+        ("mxy", "Bending Mxy"), ("mx_wa", "Wood-Armer Mx"), ("my_wa", "Wood-Armer My"),
         ("vx", "Shear Vx"), ("vy", "Shear Vy")
     ]
 
@@ -208,10 +210,9 @@ def render_contour_viewer(contours_dict):
     js_toggle = "document.querySelectorAll('[id^=contour_]').forEach(el => el.style.display = 'none'); document.getElementById('contour_' + this.value).style.display = 'block';"
 
     return air.Div(
-        air.H2("FEA Contour Plots"),
+        air.H2("Contour Plots"),
         air.Div(
             air.Div(
-                air.Label("Select Contour Output:", style="font-size: 14px; margin-bottom: 8px; display: block;"),
                 air.Select(*[air.Option(title, value=key) for key, title in options], onchange=js_toggle),
                 style="margin-bottom: 16px; text-align: center;"
             ),
@@ -235,11 +236,11 @@ def setup_slab_routes(app):
         if not data.proj_date: data.proj_date = date.today().strftime("%Y-%m-%d")
         csrf_token = getattr(request.state, "csrf_token", request.cookies.get("csrftoken", "dev_token"))
 
-        return expressive_layout(
+        return blueprint_layout(
             air.Header(
                 air.A("← Dashboard", href="/", class_="back-link no-print"),
                 air.H1("RC Slab Designer"),
-                air.P("OpenSees FEA Engine", class_="subtitle"),
+                air.P("in accordance with ACI 318M-25", class_="subtitle"),
                 class_="module-header"
             ),
             air.Main(
@@ -248,51 +249,63 @@ def setup_slab_routes(app):
                     air.Div(
                         air.H2("Geometry and Materials"),
                         air.Div(
-                            air.Div(air.Label("Span Length X (mm)"),
+                            air.Div(air.Label("Span along x (mm)"),
                                     air.Input(type="number", name="length_x", value=str(data.length_x), required=True),
                                     class_="form-group"),
-                            air.Div(air.Label("Span Length Y (mm)"),
+                            air.Div(air.Label("Span along y (mm)"),
                                     air.Input(type="number", name="length_y", value=str(data.length_y), required=True),
                                     class_="form-group"),
-                            air.Div(air.Label("Slab Thickness (mm)"),
+                            air.Div(air.Label("Thickness (mm)"),
                                     air.Input(type="number", name="thickness", value=str(data.thickness),
                                               required=True), class_="form-group"),
-                            air.Div(air.Label("Concrete Cover (mm)"),
+                            air.Div(air.Label("Concrete cover (mm)"),
                                     air.Input(type="number", name="cover", value=str(data.cover), required=True),
                                     class_="form-group"),
-                            air.Div(air.Label("Concrete strength f'c (MPa)"),
+                            air.Div(air.Label("Concrete strength (MPa)"),
                                     air.Input(type="number", name="fc_prime", value=str(data.fc_prime), step="any",
                                               required=True), class_="form-group"),
-                            air.Div(air.Label("Steel yield strength fy (MPa)"),
+                            air.Div(air.Label("Rebar yield strength (MPa)"),
                                     air.Input(type="number", name="fy", value=str(data.fy), step="any", required=True),
+                                    class_="form-group"),
+                            air.Div(air.Label("Bottom bar diameter"),
+                                    air.Select(
+                                        *[air.Option(db, value=db, selected=(db == data.bottom_bar_size))
+                                          for db in ["D10", "D12", "D16", "D20", "D25", "D28", "D32", "D36"]],
+                                        name="bottom_bar_size"),
+                                    class_="form-group"),
+                            air.Div(air.Label("Top bar diameter"),
+                                    air.Select(
+                                        *[air.Option(db, value=db, selected=(db == data.top_bar_size))
+                                          for db in ["D10", "D12", "D16", "D20", "D25", "D28", "D32", "D36"]],
+                                        name="top_bar_size"),
                                     class_="form-group"),
                             class_="grid-3"
                         ), class_="card"
                     ),
                     air.Div(
-                        air.H2("Edge Support Conditions"),
+                        air.H2("Supports at Edges"),
                         air.Div(
-                            render_edge_input("Top (Y=Ly)", "edge_top", data),
-                            render_edge_input("Bottom (Y=0)", "edge_bot", data),
-                            render_edge_input("Left (X=0)", "edge_left", data),
-                            render_edge_input("Right (X=Lx)", "edge_right", data),
+                            render_edge_input("Top", "edge_top", data),
+                            render_edge_input("Bottom", "edge_bot", data),
+                            render_edge_input("Left", "edge_left", data),
+                            render_edge_input("Right", "edge_right", data),
                             class_="grid-2"
                         ), class_="card"
                     ),
                     air.Div(
-                        air.H2("Loading & Serviceability"),
+                        air.H2("Loads"),
                         air.P(
-                            f"Note: Slab self-weight is automatically computed based on {data.thickness}mm thickness.",
+                            f"Note: Slab self-weight automatically computed, no need to include.",
                             style="color: var(--text-muted); font-size: 14px; margin-bottom: 16px;"),
                         air.Div(
-                            air.Div(air.Label("Superimposed Dead Load (SDL)"),
+                            air.Div(air.Label("Superimposed dead load (kPa)"),
                                     air.Input(type="number", name="superimposed_dead",
                                               value=str(data.superimposed_dead), step="any", required=True),
                                     class_="form-group"),
-                            air.Div(air.Label("Live Load (LL)"),
+                            air.Div(air.Label("Live load (kPa)"),
                                     air.Input(type="number", name="live_load", value=str(data.live_load), step="any",
                                               required=True), class_="form-group"),
-                            air.Div(air.Label("Long Term Deflection Limit"), air.Select(
+                            air.Div(air.Label("Long-term deflection limit"), air.Select(
                                 air.Option("L/240 (Non-sensitive finishes)", value="240",
                                            selected=(str(data.deflection_limit) == "240")),
                                 air.Option("L/480 (Sensitive finishes)", value="480",
@@ -301,7 +314,7 @@ def setup_slab_routes(app):
                             ), class_="form-group"),
                             class_="grid-3"
                         ),
-                        air.Button("Analyze via OpenSees FEA", type="submit",
+                        air.Button("Run Analysis", type="submit",
                                    style="width: 100%; font-size: 18px; margin-top: 32px;"),
                         class_="card"
                     ),
@@ -319,7 +332,7 @@ def setup_slab_routes(app):
             data = SlabDesignModel(**form_data)
         except Exception as e:
             return AirResponse(content=str(
-                expressive_layout(air.Main(air.Div(air.H2("Validation Failed"), air.P(str(e)), class_="card")))),
+                blueprint_layout(air.Main(air.Div(air.H2("Validation Failed"), air.P(str(e)), class_="card")))),
                                media_type="text/html")
 
         try:
@@ -357,7 +370,9 @@ def setup_slab_routes(app):
                 load_pattern=LoadPattern.UNIFORM, load_factors={'D': 1.2, 'L': 1.6}
             )
 
-            res = engine.perform_complete_slab_design(geom, loads, mat_props)
+            res = engine.perform_complete_slab_design(geom, loads, mat_props,
+                                                       preferred_bottom_bar=data.bottom_bar_size,
+                                                       preferred_top_bar=data.top_bar_size)
 
             status_util = "#16A34A" if res.utilization_ratio <= 1.0 else "#DC2626"
 
@@ -370,82 +385,145 @@ def setup_slab_routes(app):
 
             if res.deflection_live > def_lim_live:
                 res.design_notes.append(
-                    f"Immediate Live Deflection ({res.deflection_live:.1f} mm) exceeds L/360 limit ({def_lim_live:.1f} mm).")
+                    f"Immediate live deflection ({res.deflection_live:.1f} mm) exceeds L/360 limit ({def_lim_live:.1f} mm).")
             if res.deflection_long > def_lim_long:
                 res.design_notes.append(
-                    f"Long-Term Deflection ({res.deflection_long:.1f} mm) exceeds L/{data.deflection_limit} limit ({def_lim_long:.1f} mm).")
+                    f"Long-term deflection ({res.deflection_long:.1f} mm) exceeds L/{data.deflection_limit:.0f} limit ({def_lim_long:.1f} mm).")
 
             notes_elements = [air.Ul(*[air.Li(f"ℹ️ {n}") for n in set(res.design_notes)],
                                      class_="notes-list")] if res.design_notes else []
 
+            qto = engine.calculate_qto(geom, res)
+
+            reinf_str_bx = f"{res.reinforcement.main_bars_x} @ {res.reinforcement.main_spacing_x:.0f} mm"
+            reinf_str_by = f"{res.reinforcement.main_bars_y} @ {res.reinforcement.main_spacing_y:.0f} mm"
+            reinf_str_tx = f"{res.reinforcement.top_bars_x} @ {res.reinforcement.top_spacing_x:.0f} mm"
+            reinf_str_ty = f"{res.reinforcement.top_bars_y} @ {res.reinforcement.top_spacing_y:.0f} mm"
+
             report_content = air.Main(
                 air.Div(
-                    air.H2("OpenSees FEA Results"),
-                    air.Div(
-                        air.Div(
-                            generate_slab_plan_css(data.length_x, data.length_y, data.thickness, data, res),
-                            air.Div(
-                                air.H4("Analysis Log", style="margin-top: 20px; color: #92400e;"), *notes_elements,
-                                style="padding: 16px; background: #fffbeb; border-radius: 8px; border: 1px solid #fde68a; margin-top: 20px;"
-                            ),
-                            style="display: flex; flex-direction: column;"
-                        ),
-                        air.Div(
-                            air.H3("DCR & Deflection"),
-                            air.Ul(
-                                air.Li(air.Strong("Max Flexural DCR"),
-                                       air.Span(f"{res.utilization_ratio:.2f}", class_="data-value",
-                                                style=f"color: {status_util}; font-weight: bold;")),
-                                air.Li(air.Strong("Immediate Live Deflection"),
-                                       air.Span(f"{res.deflection_live:.2f} mm", class_="data-value",
-                                                style=f"color: {status_def_live}; font-weight: bold;")),
-                                air.Li(air.Strong("Limit (L/360)"),
-                                       air.Span(f"{def_lim_live:.1f} mm", class_="data-value")),
-                                air.Li(air.Strong("Long-Term Deflection"),
-                                       air.Span(f"{res.deflection_long:.2f} mm", class_="data-value",
-                                                style=f"color: {status_def_long}; font-weight: bold;")),
-                                air.Li(air.Strong(f"Limit (L/{data.deflection_limit})"),
-                                       air.Span(f"{def_lim_long:.1f} mm", class_="data-value")),
-                            ),
-                            air.H3("Reinforcement Details", style="margin-top: 24px;"),
-                            air.Ul(
-                                air.Li(air.Strong("Main Bottom X (Blue)"), air.Span(
-                                    f"{res.reinforcement.main_bars_x} @ {res.reinforcement.main_spacing_x:.0f} mm",
-                                    class_="data-value", style="color: #2563eb; font-weight: bold;")),
-                                air.Li(air.Strong("Top X (Supports)"), air.Span(
-                                    f"{res.reinforcement.top_bars_x} @ {res.reinforcement.top_spacing_x:.0f} mm",
-                                    class_="data-value", style="color: #db2777;")),
-                                air.Li(air.Strong("Main Bottom Y (Red)"), air.Span(
-                                    f"{res.reinforcement.main_bars_y} @ {res.reinforcement.main_spacing_y:.0f} mm",
-                                    class_="data-value", style="color: #ef4444; font-weight: bold;")),
-                                air.Li(air.Strong("Top Y (Supports)"), air.Span(
-                                    f"{res.reinforcement.top_bars_y} @ {res.reinforcement.top_spacing_y:.0f} mm",
-                                    class_="data-value", style="color: #db2777;")),
-                            ),
-                            air.H3("FEA Demand Moments (kN·m/m)", style="margin-top: 24px;"),
-                            air.Ul(
-                                air.Li(air.Strong("+Mxx (Span X)"),
-                                       air.Span(f"{res.moments.moment_x_positive:.1f}", class_="data-value")),
-                                air.Li(air.Strong("-Mxx (Support X)"),
-                                       air.Span(f"{res.moments.moment_x_negative:.1f}", class_="data-value")),
-                                air.Li(air.Strong("+Myy (Span Y)"),
-                                       air.Span(f"{res.moments.moment_y_positive:.1f}", class_="data-value")),
-                                air.Li(air.Strong("-Myy (Support Y)"),
-                                       air.Span(f"{res.moments.moment_y_negative:.1f}", class_="data-value")),
-                            ),
-                            class_="section-box", style="height: 100%;"
-                        ),
-                        class_="grid-2"
-                    ), class_="card"
-                ),
-                render_contour_viewer(res.contours)
-            )
+                    air.Button("🖨️ Save as PDF", onclick="window.print()",
+                               style="background-color: var(--accent); color: var(--bg-deep);"),
+                    style="margin-bottom: 24px; display: flex; justify-content: flex-end;", class_="no-print"),
 
-            resp = AirResponse(content=str(expressive_layout(
+                    air.Div(
+                        air.H2("Design Results"),
+                        air.Div(
+                            air.Div(
+                                generate_slab_plan_css(data.length_x, data.length_y, data.thickness, data, res),
+                                air.Div(
+                                    air.H4("Design Notes", style="margin-top: 20px; color: #92400e;"), *notes_elements,
+                                    style="padding: 16px; background: #fffbeb; border-radius: 8px; border: 1px solid #fde68a; margin-top: 20px;"
+                                ),
+                                style="display: flex; flex-direction: column;"
+                            ),
+                            air.Div(
+                                air.H3("Design Checks"),
+                                air.Ul(
+                                    air.Li(
+                                        air.Strong("Maximum DCR flexure"),
+                                        air.Span(
+                                            f"{res.utilization_ratio:.2f} {'≤' if res.utilization_ratio <= 1.0 else '>'} 1.00",
+                                            class_=f"status-badge {'pass' if res.utilization_ratio <= 1.0 else 'fail'}"),
+                                    ),
+                                    air.Li(
+                                        air.Strong("Immediate live deflection"),
+                                        air.Span(
+                                            f"{res.deflection_live:.2f} mm {'≤' if res.deflection_live <= def_lim_live else '>'} {def_lim_live:.1f} mm",
+                                            class_=f"status-badge {'pass' if res.deflection_live <= def_lim_live else 'fail'}"),
+                                    ),
+                                    air.Li(
+                                        air.Strong("Long-term deflection"),
+                                        air.Span(
+                                            f"{res.deflection_long:.2f} mm {'≤' if res.deflection_long <= def_lim_long else '>'} {def_lim_long:.1f} mm",
+                                            class_=f"status-badge {'pass' if res.deflection_long <= def_lim_long else 'fail'}"),
+                                    ),
+                                ),
+                                air.H3("Reinforcement Details", style="margin-top: 24px;"),
+                                air.Ul(
+                                    air.Li(air.Strong("Bottom bars along x"), air.Span(
+                                        f"{res.reinforcement.main_bars_x} @ {res.reinforcement.main_spacing_x:.0f} mm",
+                                        class_="data-value", style="color: #2563eb; font-weight: bold;")),
+                                    air.Li(air.Strong("Top bars along x"), air.Span(
+                                        f"{res.reinforcement.top_bars_x} @ {res.reinforcement.top_spacing_x:.0f} mm",
+                                        class_="data-value", style="color: #db2777;")),
+                                    air.Li(air.Strong("Bottom bars along y"), air.Span(
+                                        f"{res.reinforcement.main_bars_y} @ {res.reinforcement.main_spacing_y:.0f} mm",
+                                        class_="data-value", style="color: #ef4444; font-weight: bold;")),
+                                    air.Li(air.Strong("Top bars along y"), air.Span(
+                                        f"{res.reinforcement.top_bars_y} @ {res.reinforcement.top_spacing_y:.0f} mm",
+                                        class_="data-value", style="color: #db2777;")),
+                                ),
+                                air.H3("Design Forces", style="margin-top: 24px;"),
+                                air.Ul(
+                                    air.Li(air.Strong("Bending +Mxx"),
+                                           air.Span(f"{res.moments.moment_x_positive:.1f} kN·m/m", class_="data-value")),
+                                    air.Li(air.Strong("Bending -Mxx"),
+                                           air.Span(f"{res.moments.moment_x_negative:.1f} kN·m/m", class_="data-value")),
+                                    air.Li(air.Strong("Bending +Myy"),
+                                           air.Span(f"{res.moments.moment_y_positive:.1f} kN·m/m", class_="data-value")),
+                                    air.Li(air.Strong("Bending -Myy"),
+                                           air.Span(f"{res.moments.moment_y_negative:.1f} kN·m/m", class_="data-value")),
+                                ),
+                                class_="section-box", style="height: 100%;"
+                            ),
+                            class_="grid-2"
+                        ), class_="card"
+                    ),
+                    render_contour_viewer(res.contours),
+
+                    air.Div(
+                        air.H2("Material Takeoff"),
+                        air.Div(
+                            air.Div(air.Div("CONCRETE", class_="metric-label"),
+                                    air.Div(f"{qto['volume']:.2f} m³", class_="metric-value"),
+                                    class_="metric-card concrete"),
+                            air.Div(air.Div("FORMWORK", class_="metric-label"),
+                                    air.Div(f"{qto['formwork']:.2f} m²", class_="metric-value"),
+                                    class_="metric-card formwork"),
+                            air.Div(air.Div("REBAR WEIGHT", class_="metric-label"),
+                                    air.Div(f"{qto['weight']:.1f} kg", class_="metric-value"),
+                                    class_="metric-card rebar"),
+                            class_="grid-3"
+                        ),
+                        class_="card"
+                    ),
+
+                    air.Div(
+                        air.H2("Reinforcement Cutting List"),
+                        air.Table(
+                            air.Thead(
+                                air.Tr(
+                                    air.Th("Location"),
+                                    air.Th("Size"),
+                                    air.Th("Qty"),
+                                    air.Th("Cut Length"),
+                                    air.Th("Order"),
+                                    air.Th("Weight"),
+                                )
+                            ),
+                            air.Tbody(*[
+                                air.Tr(
+                                    air.Td(it['label']),
+                                    air.Td(it['bar']),
+                                    air.Td(str(it['qty'])),
+                                    air.Td(f"{it.get('each_len_m', 0):.2f}m"),
+                                    air.Td(f"{it.get('com_bars', 0)} x {it.get('commercial_len_m', 0):.1f}m"),
+                                    air.Td(f"{it.get('weight_kg', 0):.1f} kg"),
+                                )
+                                for it in qto.get('cutting_list', [])
+                            ]),
+                            style="width: 100%; border-collapse: collapse; font-size: 14px;"
+                        ),
+                        class_="card"
+                    ) if qto.get('cutting_list') else air.Div(),
+                )
+
+            resp = AirResponse(content=str(blueprint_layout(
                 air.Header(
                     air.A("← Edit Inputs", href="/slab", class_="back-link no-print"),
                     air.H1("RC Slab Designer"),
-                    air.P("OpenSees FEA Engine", class_="subtitle"),
+                    air.P("in accordance with ACI 318M-25", class_="subtitle"),
                     class_="module-header"
                 ), report_content
             )), media_type="text/html")
@@ -454,7 +532,7 @@ def setup_slab_routes(app):
             return resp
 
         except Exception as e:
-            return AirResponse(content=str(expressive_layout(
+            return AirResponse(content=str(blueprint_layout(
                 air.Header(
                     air.A("← Go Back", href="/slab", class_="back-link no-print"),
                     air.H1("Calculation Error"),

@@ -377,8 +377,8 @@ class ACI318M25SlabDesign:
         return plots
 
     def design_flexural_reinforcement(self, moment: float, effective_depth: float, thickness: float,
-                                      material_props: MaterialProperties, notes: List[str], label: str) -> Tuple[
-        str, float]:
+                                      material_props: MaterialProperties, notes: List[str], label: str,
+                                      preferred_bar: str = None) -> Tuple[str, float]:
         fc_prime, fy = material_props.fc_prime, material_props.fy
         width = 1000.0
         Mu = moment * 1e6
@@ -386,7 +386,7 @@ class ACI318M25SlabDesign:
         rho_temp = 0.0020 if fy <= 420 else (0.0018 if fy <= 520 else 0.0018 * 420.0 / fy)
         As_min = rho_temp * width * thickness
 
-        if Mu <= 0: return self._select_slab_reinforcement(As_min, width, fy, thickness)
+        if Mu <= 0: return self._select_slab_reinforcement(As_min, width, fy, thickness, preferred_bar)
 
         phi = self.phi_factors['flexure']
         A = phi * fy ** 2 / (2 * 0.85 * fc_prime * width)
@@ -401,11 +401,13 @@ class ACI318M25SlabDesign:
         else:
             As_required = max((-B - math.sqrt(discriminant)) / (2 * A), As_min)
 
-        return self._select_slab_reinforcement(As_required, width, fy, thickness)
+        return self._select_slab_reinforcement(As_required, width, fy, thickness, preferred_bar)
 
-    def _select_slab_reinforcement(self, As_required: float, width: float, fy: float, thickness: float) -> Tuple[
-        str, float]:
-        bar_sizes = ['D10', 'D12', 'D16', 'D20', 'D25']
+    def _select_slab_reinforcement(self, As_required: float, width: float, fy: float, thickness: float,
+                                   preferred_bar: str = None) -> Tuple[str, float]:
+        bar_sizes = ['D10', 'D12', 'D16', 'D20', 'D25', 'D28', 'D32', 'D36']
+        if preferred_bar and preferred_bar in bar_sizes:
+            bar_sizes = [preferred_bar] + [b for b in bar_sizes if b != preferred_bar]
         max_spacing = min(3 * thickness, 450.0)
         for bar_size in bar_sizes:
             bar_area = self.aci.get_bar_area(bar_size)
@@ -414,7 +416,7 @@ class ACI318M25SlabDesign:
             if (max(25.0, db) + db) <= spacing <= max_spacing:
                 return bar_size, math.floor(spacing / 10.0) * 10.0
         if As_required > (self.aci.get_bar_area('D10') * width / max_spacing):
-            bar = 'D25'
+            bar = bar_sizes[-1]
             spacing = self.aci.get_bar_area(bar) * width / As_required
             return bar, max(40.0, math.floor(spacing / 10.0) * 10.0)
         else:
@@ -445,7 +447,9 @@ class ACI318M25SlabDesign:
         return rho_temp * width * thickness
 
     def perform_complete_slab_design(self, geometry: SlabGeometry, loads: SlabLoads,
-                                     material_props: MaterialProperties) -> SlabAnalysisResult:
+                                     material_props: MaterialProperties,
+                                     preferred_bottom_bar: str = "D12",
+                                     preferred_top_bar: str = "D12") -> SlabAnalysisResult:
         design_notes = ["Analysis performed using OpenSeesPy ShellMITC4 3D finite element model."]
 
         w_u_mpa = ((loads.self_weight + loads.superimposed_dead) * loads.load_factors.get('D',
@@ -481,15 +485,17 @@ class ACI318M25SlabDesign:
         contour_b64s = self.generate_contour_plots(geometry, ult_grid)
 
         bx, sx = self.design_flexural_reinforcement(moments.moment_x_positive, geometry.effective_depth_x,
-                                                    geometry.thickness, material_props, design_notes, "+Mxx (Span X)")
+                                                    geometry.thickness, material_props, design_notes, "+Mxx (Span X)",
+                                                    preferred_bottom_bar)
         by, sy = self.design_flexural_reinforcement(moments.moment_y_positive, geometry.effective_depth_y,
-                                                    geometry.thickness, material_props, design_notes, "+Myy (Span Y)")
+                                                    geometry.thickness, material_props, design_notes, "+Myy (Span Y)",
+                                                    preferred_bottom_bar)
         bxt, sxt = self.design_flexural_reinforcement(moments.moment_x_negative, geometry.effective_depth_x,
                                                       geometry.thickness, material_props, design_notes,
-                                                      "-Mxx (Support X)")
+                                                      "-Mxx (Support X)", preferred_top_bar)
         byt, syt = self.design_flexural_reinforcement(moments.moment_y_negative, geometry.effective_depth_y,
                                                       geometry.thickness, material_props, design_notes,
-                                                      "-Myy (Support Y)")
+                                                      "-Myy (Support Y)", preferred_top_bar)
         bsh, ssh = self._select_slab_reinforcement(
             self._calculate_minimum_slab_reinforcement(1000, geometry.thickness, material_props.fy), 1000,
             material_props.fy, geometry.thickness)
@@ -511,3 +517,106 @@ class ACI318M25SlabDesign:
             SlabReinforcement(bx, sx, by, sy, bsh, ssh, bxt, sxt, byt, syt),
             def_live, def_long, max_dcr, design_notes, contour_b64s
         )
+
+    def calculate_qto(self, geom: SlabGeometry, res: SlabAnalysisResult) -> dict:
+        vol = (geom.length_x / 1000.0) * (geom.length_y / 1000.0) * (geom.thickness / 1000.0)
+        fw = (geom.length_x / 1000.0) * (geom.length_y / 1000.0)
+
+        COMMERCIAL_LENGTHS = [6000, 7500, 9000, 10500, 12000]
+        LAP_SPLICE = 40
+        HOOK_LEN = 12
+
+        def _bar_weight(db_mm, length_m):
+            return length_m * (db_mm ** 2 / 162.0)
+
+        def _optimize_cutting_stock(bar_size, spacing, L_along, L_across, label):
+            if bar_size == 'None' or spacing <= 0:
+                return []
+            db = float(bar_size.replace('D', ''))
+            qty = math.ceil(L_across / spacing)
+            if qty < 1:
+                qty = 1
+            straight_m = (L_along - 2 * geom.cover) / 1000.0
+            if straight_m <= 0:
+                return []
+
+            hook_m = HOOK_LEN * db / 1000.0
+            lap_m = LAP_SPLICE * db / 1000.0
+            cut_len = straight_m + 2 * hook_m
+
+            best = None
+            for C_mm in COMMERCIAL_LENGTHS:
+                C = C_mm / 1000.0
+                if cut_len > C:
+                    pieces_per_commercial = 0
+                else:
+                    pieces_per_commercial = int((C + lap_m) / (cut_len + lap_m))
+
+                if pieces_per_commercial < 1:
+                    continue
+
+                n_commercial = math.ceil(qty / pieces_per_commercial)
+                total_purchased = n_commercial * C
+                total_splices = max(0, qty - pieces_per_commercial)
+                total_used = qty * cut_len + total_splices * lap_m
+                waste = total_purchased - total_used
+
+                if best is None or waste < best['waste']:
+                    best = {
+                        'commercial_len_m': C,
+                        'pieces_per_bar': pieces_per_commercial,
+                        'n_commercial': n_commercial,
+                        'waste': waste,
+                    }
+
+            if best is None:
+                C = COMMERCIAL_LENGTHS[-1] / 1000.0
+                pieces_per_commercial = max(1, int((C + lap_m) / (cut_len + lap_m)))
+                n_commercial = math.ceil(qty / pieces_per_commercial)
+                total_purchased = n_commercial * C
+                total_splices = max(0, qty - pieces_per_commercial)
+                total_used = qty * cut_len + total_splices * lap_m
+                best = {
+                    'commercial_len_m': C,
+                    'pieces_per_bar': pieces_per_commercial,
+                    'n_commercial': n_commercial,
+                    'waste': total_purchased - total_used,
+                }
+
+            total_purchased = best['n_commercial'] * best['commercial_len_m']
+            total_used = qty * cut_len + max(0, qty - best['pieces_per_bar']) * lap_m
+            total_weight = _bar_weight(db, total_used)
+
+            return [{
+                'label': label,
+                'bar': bar_size,
+                'qty': qty,
+                'each_len_m': round(cut_len, 2),
+                'total_len_m': round(total_used, 1),
+                'weight_kg': round(total_weight, 1),
+                'splices': max(0, qty - best['pieces_per_bar']),
+                'commercial_len_m': best['commercial_len_m'],
+                'com_bars': best['n_commercial'],
+                'waste_m': round(best['waste'], 2),
+            }]
+
+        items = []
+        items.extend(_optimize_cutting_stock(
+            res.reinforcement.main_bars_x, res.reinforcement.main_spacing_x,
+            geom.length_x, geom.length_y, "Bottom X Bars"))
+        items.extend(_optimize_cutting_stock(
+            res.reinforcement.main_bars_y, res.reinforcement.main_spacing_y,
+            geom.length_y, geom.length_x, "Bottom Y Bars"))
+        items.extend(_optimize_cutting_stock(
+            res.reinforcement.top_bars_x, res.reinforcement.top_spacing_x,
+            geom.length_x, geom.length_y, "Top X Bars (Supports)"))
+        items.extend(_optimize_cutting_stock(
+            res.reinforcement.top_bars_y, res.reinforcement.top_spacing_y,
+            geom.length_y, geom.length_x, "Top Y Bars (Supports)"))
+        items.extend(_optimize_cutting_stock(
+            res.reinforcement.shrinkage_bars, res.reinforcement.shrinkage_spacing,
+            geom.length_x, geom.length_y, "Shrinkage Bars"))
+
+        total_wt = sum(it['weight_kg'] for it in items) if items else 0.0
+
+        return {'volume': vol, 'formwork': fw, 'weight': total_wt, 'cutting_list': items}
