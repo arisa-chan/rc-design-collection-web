@@ -731,7 +731,7 @@ def setup_beam_routes(app):
             M_l = float(data.mid_mlive)
 
             M_d = float(data.mid_mdead)
-            M_sus = M_d + 0.5 * M_l
+            M_sus = M_d + 0.25 * M_l
             M_tot = M_d + M_l
 
             fr = 0.62 * math.sqrt(data.fc_prime)
@@ -785,7 +785,7 @@ def setup_beam_routes(app):
 
                 M_fixed_d = M_d * scale_fixed
                 M_fixed_l = M_l * scale_fixed
-                M_fixed_sus = M_fixed_d + 0.5 * M_fixed_l
+                M_fixed_sus = M_fixed_d + 0.25 * M_fixed_l
                 M_fixed_tot = M_fixed_d + M_fixed_l
 
             else:
