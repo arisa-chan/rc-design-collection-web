@@ -14,6 +14,7 @@ dependencies = [
     "pdfkit>=1.0.0",
     "pint>=0.25.3",
     "pydantic>=2.9.0",
+    "pylatex>=1.4.2",
     "rubberize>=0.4.2.post1",
     "wkhtmltopdf>=0.2",
 ]

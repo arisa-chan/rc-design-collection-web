@@ -1,10 +1,12 @@
 import air
 from air import AirField, AirResponse
+from fastapi.responses import Response
 from pydantic import BaseModel
 import math
 import json
 from datetime import date
 import pdfkit
+from beam_pdf import generate_beam_report
 
 # Import the ACI 318M-25 library components
 from aci318m25 import ConcreteStrengthClass, ReinforcementGrade, MaterialProperties
@@ -39,6 +41,7 @@ class BeamDesignModel(BaseModel):
     fyt: float = AirField(default=420.0)
 
     deflection_limit: str = AirField(default="240")
+    generate_pdf: str = AirField(default="")
 
     # Left Support Forces
     left_mu_neg: float = AirField(default=300.0)
@@ -737,38 +740,148 @@ def setup_beam_routes(app):
             yt = data.height / 2.0
             M_cr = (fr * Ig) / yt / 1e6
 
-            n_ratio = 200000.0 / Ec
-            As_bot = res_mid.reinforcement.bottom_area
-            rho_bot = As_bot / (data.width * data.effective_depth) if (data.width * data.effective_depth) > 0 else 0
+            n = 200000.0 / Ec
+            d = data.effective_depth
+            d_prime = max(40.0, data.height - data.effective_depth)
+            b = data.width
 
-            Icr = Ig
-            if rho_bot > 0:
-                k_val = math.sqrt((rho_bot * n_ratio) ** 2 + 2 * rho_bot * n_ratio) - rho_bot * n_ratio
-                kd = k_val * data.effective_depth
-                Icr = (data.width * kd ** 3) / 3.0 + n_ratio * As_bot * (data.effective_depth - kd) ** 2
-                Icr = min(Icr, Ig)
+            # ---------------------------------------------------------
+            # Detect cantilever: one end has both Mu+ and Mu- equal to zero
+            # ---------------------------------------------------------
+            left_is_free = (float(data.left_mu_neg) == 0 and float(data.left_mu_pos) == 0)
+            right_is_free = (float(data.right_mu_neg) == 0 and float(data.right_mu_pos) == 0)
+            is_cantilever = (left_is_free != right_is_free)  # exactly one end free
+
+            if is_cantilever:
+                # ---------------------------------------------------------
+                # CANTILEVER CASE
+                # Deflection computed at the free end (tip).
+                # Per ACI 318 Table 24.2.3.6b: use Ie at the support (fixed end).
+                # Icr uses fixed-end reinforcement (hogging: tension at top).
+                # Tip deflection via Simpson's rule on M/EI diagram:
+                #   δ_tip = L² / (6·Ec·Ie) × (2·M_mid + M_fixed)
+                # ---------------------------------------------------------
+                if left_is_free:
+                    res_fixed = res_right
+                    Mu_fixed = max(float(data.right_mu_neg), float(data.right_mu_pos))
+                    defl_location = "free end (left)"
+                else:
+                    res_fixed = res_left
+                    Mu_fixed = max(float(data.left_mu_neg), float(data.left_mu_pos))
+                    defl_location = "free end (right)"
+
+                # Tension steel at fixed end (hogging → top bars in tension)
+                As_t = res_fixed.reinforcement.top_area
+                As_c = res_fixed.reinforcement.bottom_area
+
+                # Governing ultimate midspan moment for scaling
+                Mu_mid_gov = max(float(data.mid_mu_neg), float(data.mid_mu_pos))
+
+                # Scale service midspan moments to fixed-end service moments
+                if Mu_mid_gov > 0:
+                    scale_fixed = Mu_fixed / Mu_mid_gov
+                else:
+                    scale_fixed = 2.0  # approximate default for cantilever
+
+                M_fixed_d = M_d * scale_fixed
+                M_fixed_l = M_l * scale_fixed
+                M_fixed_sus = M_fixed_d + 0.5 * M_fixed_l
+                M_fixed_tot = M_fixed_d + M_fixed_l
+
+            else:
+                # ---------------------------------------------------------
+                # SPAN BEAM CASE (simply-supported or continuous)
+                # Icr from midspan reinforcement (sagging: tension at bottom).
+                # ---------------------------------------------------------
+                As_t = res_mid.reinforcement.bottom_area
+                As_c = res_mid.reinforcement.top_area
+                defl_location = "midspan"
+
+            # ---------------------------------------------------------
+            # Calculate Icr (same quadratic, different As for cant/span)
+            # ---------------------------------------------------------
+            A_quad = 0.5 * b
+            B_quad = (n - 1) * As_c + n * As_t
+            C_quad = -((n - 1) * As_c * d_prime + n * As_t * d)
+
+            discriminant = B_quad**2 - 4 * A_quad * C_quad
+            if discriminant > 0:
+                kd = (-B_quad + math.sqrt(discriminant)) / (2 * A_quad)
+                Icr = (b * kd**3) / 3.0 + (n - 1) * As_c * (kd - d_prime)**2 + n * As_t * (d - kd)**2
+            else:
+                Icr = Ig
 
             def calc_Ie(M_applied):
                 if M_applied <= 0: return Ig
-                if M_applied <= M_cr:
+                if M_applied <= (2.0/3.0) * M_cr:
                     return Ig
-                ratio = M_cr / M_applied
-                # ACI 318M-25 §24.2.3.5a: Ie = (Mcr/Ma)³ Ig + [1-(Mcr/Ma)³] Icr ≤ Ig
-                Ie_calc = (ratio ** 3) * Ig + (1.0 - ratio ** 3) * Icr
+                # ACI 318M-25 §24.2.3.5: Ie = Icr / (1 - ((2/3*Mcr)/Ma)^2 * (1 - Icr/Ig))
+                factor_m = ((2.0/3.0) * M_cr / M_applied) ** 2
+                Ie_calc = Icr / (1.0 - factor_m * (1.0 - Icr / Ig))
                 return max(Icr, min(Ie_calc, Ig))
 
-            Ie_d = calc_Ie(M_d)
-            Ie_sus = calc_Ie(M_sus)
-            Ie_tot = calc_Ie(M_tot)
+            if is_cantilever:
+                # Per ACI Table 24.2.3.6b: Ie at support for cantilevers
+                Ie_d = calc_Ie(M_fixed_d)
+                Ie_sus = calc_Ie(M_fixed_sus)
+                Ie_tot = calc_Ie(M_fixed_tot)
 
-            delta_d_imm = (5 * M_d * 1e6 * (L_mm ** 2)) / (48 * Ec * Ie_d) if Ie_d > 0 else 0
-            delta_sus_imm = (5 * M_sus * 1e6 * (L_mm ** 2)) / (48 * Ec * Ie_sus) if Ie_sus > 0 else 0
-            delta_tot_imm = (5 * M_tot * 1e6 * (L_mm ** 2)) / (48 * Ec * Ie_tot) if Ie_tot > 0 else 0
+                # Tip deflection via Simpson's rule:
+                #   δ_tip = L² / (6·Ec·Ie) × (2·M_mid + M_fixed)
+                def calc_delta_cant(M_mid_s, M_fixed_s, Ie):
+                    if Ie <= 0 or (M_mid_s <= 0 and M_fixed_s <= 0):
+                        return 0.0
+                    return max(0.0, (L_mm ** 2) / (6.0 * Ec * Ie) * (2.0 * M_mid_s * 1e6 + M_fixed_s * 1e6))
+
+                delta_d_imm = calc_delta_cant(M_d, M_fixed_d, Ie_d)
+                delta_sus_imm = calc_delta_cant(M_sus, M_fixed_sus, Ie_sus)
+                delta_tot_imm = calc_delta_cant(M_tot, M_fixed_tot, Ie_tot)
+
+                # Support moments not applicable for cantilever PDF display
+                M_A_tot = M_B_tot = 0.0
+
+            else:
+                # Span beam: Ie at midspan
+                Ie_d = calc_Ie(M_d)
+                Ie_sus = calc_Ie(M_sus)
+                Ie_tot = calc_Ie(M_tot)
+
+                # ---------------------------------------------------------
+                # Estimate service-level support moments from ultimate ratios
+                # ---------------------------------------------------------
+                Mu_mid_pos = float(data.mid_mu_pos)
+                Mu_left_neg = float(data.left_mu_neg)
+                Mu_right_neg = float(data.right_mu_neg)
+
+                if Mu_mid_pos > 0:
+                    scale_d = M_d / Mu_mid_pos
+                    M_A_d = -Mu_left_neg * scale_d
+                    M_B_d = -Mu_right_neg * scale_d
+                    scale_sus = M_sus / Mu_mid_pos
+                    M_A_sus = -Mu_left_neg * scale_sus
+                    M_B_sus = -Mu_right_neg * scale_sus
+                    scale_tot = M_tot / Mu_mid_pos
+                    M_A_tot = -Mu_left_neg * scale_tot
+                    M_B_tot = -Mu_right_neg * scale_tot
+                else:
+                    M_A_d = M_B_d = M_A_sus = M_B_sus = M_A_tot = M_B_tot = 0.0
+
+                # ---------------------------------------------------------
+                # Midspan deflection via Simpson's rule:
+                #   δ = L² / (96·Ec·Ie) × (M_A + 10·M_C + M_B)
+                # ---------------------------------------------------------
+                def calc_delta(M_A, M_C, M_B, Ie):
+                    if Ie <= 0 or M_C <= 0:
+                        return 0.0
+                    return max(0.0, (L_mm ** 2) / (96.0 * Ec * Ie) * (M_A * 1e6 + 10.0 * M_C * 1e6 + M_B * 1e6))
+
+                delta_d_imm = calc_delta(M_A_d, M_d, M_B_d, Ie_d)
+                delta_sus_imm = calc_delta(M_A_sus, M_sus, M_B_sus, Ie_sus)
+                delta_tot_imm = calc_delta(M_A_tot, M_tot, M_B_tot, Ie_tot)
 
             delta_live = max(0.0, delta_tot_imm - delta_d_imm)
 
-            As_top = res_mid.reinforcement.top_area
-            rho_prime = As_top / (data.width * data.effective_depth) if (data.width * data.effective_depth) > 0 else 0
+            rho_prime = As_c / (data.width * data.effective_depth) if (data.width * data.effective_depth) > 0 else 0
             time_factor = 2.0 / (1 + 50 * rho_prime)
 
             delta_long = delta_live + time_factor * delta_sus_imm
@@ -781,10 +894,36 @@ def setup_beam_routes(app):
             status_live = "#16A34A" if delta_live <= lim_live else "#DC2626"
             status_long = "#16A34A" if delta_long <= lim_long else "#DC2626"
 
+            if data.generate_pdf == "1":
+                # Create a data object for deflection values
+                defl_data = {
+                    "M_cr": M_cr, "I_g": Ig, "I_cr": Icr, "I_e": Ie_tot,
+                    "delta_live": delta_live, "delta_long": delta_long,
+                    "lim_live": lim_live, "lim_long": lim_long,
+                    "M_A_tot": M_A_tot, "M_B_tot": M_B_tot,
+                    "is_cantilever": is_cantilever, "defl_location": defl_location
+                }
+                pdf_bytes = generate_beam_report(data, mat_props, beam_geom, res_left, res_mid, res_right, defl_data)
+                return Response(
+                    content=pdf_bytes, 
+                    media_type="application/pdf", 
+                    headers={"Content-Disposition": 'attachment; filename="beam_report.pdf"'}
+                )
+
+            hidden_inputs = [air.Input(type="hidden", name=k, value=str(v)) for k, v in data.model_dump().items() if k != "generate_pdf"]
+            if "csrf_token" in form_data:
+                hidden_inputs.append(air.Input(type="hidden", name="csrf_token", value=form_data.get("csrf_token")))
+
             report_content = air.Main(
                 air.Div(
-                    air.Button("🖨️ Save as PDF", onclick="window.print()", style="background-color: var(--secondary);"),
-                    style="margin-bottom: 24px; display: flex; justify-content: flex-end;", class_="no-print"
+                    air.Form(
+                        *hidden_inputs,
+                        air.Input(type="hidden", name="generate_pdf", value="1"),
+                        air.Button("🖨️ Print Summary", onclick="window.print()", type="button", style="background-color: var(--secondary); margin-right: 12px;"),
+                        air.Button("📄 Generate Detailed PDF (LaTeX)", type="submit", style="background-color: #2563eb; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-weight: 600;"),
+                        method="post", action="/beam/design", style="display: flex; justify-content: flex-end; align-items: center;"
+                    ),
+                    style="margin-bottom: 24px;", class_="no-print"
                 ),
                 air.Div(
                     air.H2("Project Information"),
@@ -849,7 +988,7 @@ def setup_beam_routes(app):
                     generate_beam_elevation_css(data.length, data.height, res_left, res_mid, res_right),
                     air.Div(
                         air.Div(
-                            air.P(air.Strong("Immediate live load deflection = "),
+                            air.P(air.Strong(f"Immediate live load deflection at {defl_location} = "),
                                   air.Span(f"{delta_live:.2f} mm",
                                            style=f"color: {status_live}; font-weight: 700;"),
                                   air.Span(
@@ -857,15 +996,16 @@ def setup_beam_routes(app):
                                       class_=f"status-badge {'pass' if delta_live <= lim_live else 'fail'}")),
                             style=f"padding: 16px; border-radius: 8px; border: 1px solid {'#bbf7d0' if delta_live <= lim_live else '#fecaca'}; background: {'#f0fdf4' if delta_live <= lim_live else '#fef2f2'}; margin-bottom: 12px;"),
                         air.Div(
-                            air.P(air.Strong("Long-term deflection = "), air.Span(f"{delta_long:.2f} mm",
+                            air.P(air.Strong(f"Long-term deflection at {defl_location} = "), air.Span(f"{delta_long:.2f} mm",
                                                                                   style=f"color: {status_long}; font-weight: 700;"),
                                   air.Span(
                                       f" {delta_long:.2f} mm {'≤' if delta_long <= lim_long else '>'} L/{int(lim_long_divisor)} = {lim_long:.1f} mm",
                                       class_=f"status-badge {'pass' if delta_long <= lim_long else 'fail'}")),
                             style=f"padding: 16px; border-radius: 8px; border: 1px solid {'#bbf7d0' if delta_long <= lim_long else '#fecaca'}; background: {'#f0fdf4' if delta_long <= lim_long else '#fef2f2'};"),
                         air.Div(
-                            air.P(air.Strong("Some values: "),
-                                  f"M_cr = {M_cr:.1f} kN-m | I_g = {Ig / 1e6:.0f} × 10⁶ mm⁴ | I_e (total) = {Ie_tot / 1e6:.0f} × 10⁶ mm⁴",
+                            air.P(air.Strong("Properties: "),
+                                  f"M_cr = {M_cr:.1f} kN-m | I_g = {Ig / 1e6:.0f} × 10⁶ mm⁴ | I_cr = {Icr / 1e6:.0f} × 10⁶ mm⁴ | I_e = {Ie_tot / 1e6:.0f} × 10⁶ mm⁴"
+                                  + (f" | Mode: Cantilever ({defl_location})" if is_cantilever else " | Mode: Span beam"),
                                   style="font-size: 13px; color: var(--text-muted);"),
                             style="padding: 0 16px;"
                         ),
