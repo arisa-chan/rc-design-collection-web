@@ -75,22 +75,22 @@ def generate_beam_report(data, mat_props, beam_geom, res_left, res_mid, res_righ
     doc.append(NoEscape(r'\vspace*{1em}'))
     
     # Material Props
-    with doc.create(Section("Material & Geometry Parameters")):
+    with doc.create(Section("Material & Geometry")):
         with doc.create(Itemize()) as itemize:
-            itemize.add_item(NoEscape(fr"Concrete Strength, $f'_c = {data.fc_prime}$ MPa"))
-            itemize.add_item(NoEscape(fr"Main Rebar Yield, $f_y = {data.fy}$ MPa"))
-            itemize.add_item(NoEscape(fr"Stirrup Yield, $f_{{yt}} = {data.fyt}$ MPa"))
-            itemize.add_item(NoEscape(fr"Beam Dimensions: Width $b_w = {data.width}$ mm, Height $h = {data.height}$ mm, Eff. Depth $d = {data.effective_depth}$ mm"))
-            itemize.add_item(NoEscape(fr"Span Length: L = ${data.length}$ mm, Clear Span $L_n = {data.clear_span}$ mm"))
+            itemize.add_item(NoEscape(fr"Concrete strength, $f'_c = {data.fc_prime}$ MPa"))
+            itemize.add_item(NoEscape(fr"Main rebar yield strength, $f_y = {data.fy}$ MPa"))
+            itemize.add_item(NoEscape(fr"Stirrup yield strength, $f_{{yt}} = {data.fyt}$ MPa"))
+            itemize.add_item(NoEscape(fr"Beam dimensions: width $b_w = {data.width}$ mm, height $h = {data.height}$ mm, effective depth $d = {data.effective_depth}$ mm"))
+            itemize.add_item(NoEscape(fr"Span length: $L = {data.length}$ mm, clear span $L_n = {data.clear_span}$ mm"))
     
     def section_report(title, demands, res):
         with doc.create(Subsection(title)):
-            doc.append(bold("Demands: "))
+            doc.append(bold("Factored loads: "))
             doc.append(NoEscape(fr"$M_u^-$ = {demands['mu_neg']} kN-m | $M_u^+$ = {demands['mu_pos']} kN-m | $V_u$ = {demands['vu']} kN | $T_u$ = {demands['tu']} kN-m"))
             doc.append(NoEscape(r'\vspace*{1em}'))
             doc.append(NoEscape(r'\\'))
 
-            doc.append(bold("Flexural Capacity Calculation"))
+            doc.append(bold("Flexural Capacities"))
             # Top
             top_area = res.reinforcement.top_area
             bot_area = res.reinforcement.bottom_area
@@ -100,9 +100,9 @@ def generate_beam_report(data, mat_props, beam_geom, res_left, res_mid, res_righ
             
             doc.append(NoEscape(r'\vspace*{0.5em}'))
             doc.append(NoEscape(r'\\'))
-            doc.append(NoEscape(fr"Top Reinforcement: {top_bars} ($A_s$ = {top_area:.1f} mm$^2$)"))
+            doc.append(NoEscape(fr"Top reinforcement: {top_bars} ($A_s$ = {top_area:.1f} mm$^2$)"))
             doc.append(NoEscape(r'\\'))
-            doc.append(NoEscape(fr"Bottom Reinforcement: {bot_bars} ($A_s$ = {bot_area:.1f} mm$^2$)"))
+            doc.append(NoEscape(fr"Bottom einforcement: {bot_bars} ($A_s$ = {bot_area:.1f} mm$^2$)"))
             doc.append(NoEscape(r'\vspace*{0.5em}'))
             
             phi = 0.90
@@ -114,7 +114,7 @@ def generate_beam_report(data, mat_props, beam_geom, res_left, res_mid, res_righ
             # Show calculations for Top Capacity (Negative Moment) if top_area > 0
             if top_area > 0:
                 doc.append(NoEscape(r'\\'))
-                doc.append(bold("Negative Flexural Capacity (Top Steel):"))
+                doc.append(bold("Negative Moment"))
                 a_top = (top_area * fy) / (0.85 * fc * b)
                 doc.append(Math(data=[NoEscape(fr"a = \frac{{A_s f_y}}{{0.85 f'_c b}} = \frac{{{top_area:.1f} \times {fy}}}{{0.85 \times {fc} \times {b}}} = {a_top:.2f} \text{{ mm}}")]))
                 doc.append(Math(data=[NoEscape(fr"\phi M_n^ - = \phi A_s f_y \left(d - \frac{{a}}{{2}}\right) = 0.90 \times {top_area:.1f} \times {fy} \times \left({d} - \frac{{{a_top:.2f}}}{{2}}\right) \times 10^{{-6}} = {res.moment_capacity_top:.1f} \text{{ kN-m}}")]))
@@ -122,18 +122,18 @@ def generate_beam_report(data, mat_props, beam_geom, res_left, res_mid, res_righ
             # Show calculations for Bottom Capacity (Positive Moment) if bot_area > 0
             if bot_area > 0:
                 doc.append(NoEscape(r'\\'))
-                doc.append(bold("Positive Flexural Capacity (Bottom Steel):"))
+                doc.append(bold("Positive Moment"))
                 a_bot = (bot_area * fy) / (0.85 * fc * b)
                 doc.append(Math(data=[NoEscape(fr"a = \frac{{A_s f_y}}{{0.85 f'_c b}} = \frac{{{bot_area:.1f} \times {fy}}}{{0.85 \times {fc} \times {b}}} = {a_bot:.2f} \text{{ mm}}")]))
                 doc.append(Math(data=[NoEscape(fr"\phi M_n^+ = \phi A_s f_y \left(d - \frac{{a}}{{2}}\right) = 0.90 \times {bot_area:.1f} \times {fy} \times \left({d} - \frac{{{a_bot:.2f}}}{{2}}\right) \times 10^{{-6}} = {res.moment_capacity_bot:.1f} \text{{ kN-m}}")]))
 
             doc.append(NoEscape(r'\vspace*{1em}'))
             doc.append(NoEscape(r'\\'))
-            doc.append(bold("Shear and Torsion Calculation"))
+            doc.append(bold("Shear and Torsion"))
             doc.append(NoEscape(r'\vspace*{0.5em}'))
             doc.append(NoEscape(r'\\'))
             s_val = res.reinforcement.stirrup_spacing_hinge if "Support" in title else res.reinforcement.stirrup_spacing
-            doc.append(NoEscape(fr"Transverse Reinforcement: {res.reinforcement.stirrups} @ {s_val:.0f} mm spacing."))
+            doc.append(NoEscape(fr"Transverse reinforcement: {res.reinforcement.stirrups} @ {s_val:.0f} mm spacing."))
             
             # Parse stirrup legs and size
             s_str = res.reinforcement.stirrups
@@ -182,7 +182,7 @@ def generate_beam_report(data, mat_props, beam_geom, res_left, res_mid, res_righ
                 fig.append(NoEscape(draw_section_tikz(data.width, data.height, res, title)))
                 fig.add_caption(fr"Reinforcement Detail - {title}")
             
-    with doc.create(Section("Section Detailed Calculations")):
+    with doc.create(Section("Design Calculations")):
         section_report("Left Support", {
             "mu_neg": data.left_mu_neg, "mu_pos": data.left_mu_pos, "vu": data.left_vu, "tu": data.left_tu
         }, res_left)
@@ -196,7 +196,7 @@ def generate_beam_report(data, mat_props, beam_geom, res_left, res_mid, res_righ
         }, res_right)
 
     # Detailed Code Checks Section
-    with doc.create(Section("Detailed Design and Detailing Checks")):
+    with doc.create(Section("Design and Detailing Checks")):
         is_smf = (data.frame_system == "special")
         is_seismic = data.sdc in ["D", "E", "F"]
         

@@ -919,8 +919,8 @@ def setup_beam_routes(app):
                     air.Form(
                         *hidden_inputs,
                         air.Input(type="hidden", name="generate_pdf", value="1"),
-                        air.Button("🖨️ Print Summary", onclick="window.print()", type="button", style="background-color: var(--secondary); margin-right: 12px;"),
-                        air.Button("📄 Generate Detailed PDF (LaTeX)", type="submit", style="background-color: #2563eb; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-weight: 600;"),
+                        air.Button("🖨️ Print Summary", onclick="window.print()", type="button", style="background-color: #2563eb; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-weight: 600;"),
+                        air.Button("📄 Generate Detailed Report", type="submit", style="background-color: #2563eb; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-weight: 600;"),
                         method="post", action="/beam/design", style="display: flex; justify-content: flex-end; align-items: center;"
                     ),
                     style="margin-bottom: 24px;", class_="no-print"
