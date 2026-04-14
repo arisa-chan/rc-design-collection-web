@@ -5,4 +5,5 @@ pdfkit>=1.0.0
 openseespy>=3.8.0.0
 numpy>=2.4.3
 matplotlib>=3.10.8
-openpyxl>=3.1.5
+pylatex>=1.4.2
+wkhtmltopdf>=0.2
