@@ -572,7 +572,8 @@ def setup_footing_routes(app):
             qto = engine.calculate_qto(geom, res)
 
             notes_elements = [
-                air.Ul(*[air.Li(f"{n}") for n in res.design_notes], class_="notes-list")] if res.design_notes else []
+                air.Ul(*[air.Li(f"{'⚠️' if any(x in n for x in ['Violation', 'CRITICAL', 'inadequate', 'exceeded']) else 'ℹ️'} {n}") for n in
+                         list(dict.fromkeys(res.design_notes))], class_="notes-list")] if res.design_notes else []
 
             reinf_str_x = f"{res.reinforcement.bottom_bars_x} @ {res.reinforcement.bottom_spacing_x:.0f} mm"
             reinf_str_y = f"{res.reinforcement.bottom_bars_y} @ {res.reinforcement.bottom_spacing_y:.0f} mm"
@@ -596,8 +597,12 @@ def setup_footing_routes(app):
 
             report_content = air.Main(
                 air.Div(
-                    air.Button("🖨️ Save as PDF", onclick="window.print()", style="background-color: var(--accent); color: var(--bg-deep);"),
-                    style="margin-bottom: 24px; display: flex; justify-content: flex-end;", class_="no-print"),
+                    air.Div(
+                        air.Button("Print Summary", onclick="window.print()",
+                                   style="background-color: var(--accent); color: var(--bg-deep); border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-weight: 600;"),
+                        style="display: flex; justify-content: flex-end; align-items: center; gap: 8px;"
+                    ),
+                    style="margin-bottom: 24px;", class_="no-print"),
 
                 # ── Input Summary ──
                 air.Div(

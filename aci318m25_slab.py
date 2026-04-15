@@ -383,7 +383,7 @@ class ACI318M25SlabDesign:
         width = 1000.0
         Mu = moment * 1e6
 
-        rho_temp = 0.0020 if fy <= 420 else (0.0018 if fy <= 520 else 0.0018 * 420.0 / fy)
+        rho_temp = 0.0020 if fy <= 420 else (0.0018 if fy <= 520 else max(0.0014, 0.0018 * 420.0 / fy))
         As_min = rho_temp * width * thickness
 
         if Mu <= 0: return self._select_slab_reinforcement(As_min, width, fy, thickness, preferred_bar)
@@ -423,7 +423,8 @@ class ACI318M25SlabDesign:
             return 'D10', math.floor(max_spacing / 10.0) * 10.0
 
     def calculate_cracked_deflection(self, gross_def_grid: np.ndarray, moments: SlabMoments, geometry: SlabGeometry,
-                                     mat_props: MaterialProperties) -> Tuple[float, np.ndarray]:
+                                     mat_props: MaterialProperties,
+                                     reinforcement: Optional[SlabReinforcement] = None) -> Tuple[float, np.ndarray]:
         Ig = (1000.0 * geometry.thickness ** 3) / 12.0
         Mcr = (0.62 * math.sqrt(mat_props.fc_prime)) * Ig / (geometry.thickness / 2.0)
         # Using Positive moments to represent mid-span cracking driving deflection
@@ -431,20 +432,34 @@ class ACI318M25SlabDesign:
 
         if Ma <= Mcr: return np.max(np.abs(gross_def_grid)), gross_def_grid
 
-        rho = self._calculate_minimum_slab_reinforcement(1000, geometry.thickness, mat_props.fy) / (
-                    1000.0 * geometry.effective_depth_x)
+        As = self._get_provided_as(reinforcement, geometry, mat_props.fy)
+        rho = As / (1000.0 * geometry.effective_depth_x)
         n = 200000.0 / mat_props.ec
         k = math.sqrt(2 * rho * n + (rho * n) ** 2) - rho * n
-        Icr = (1000.0 * k ** 3 * geometry.effective_depth_x ** 3) / 3.0 + n * (
-                    rho * 1000 * geometry.effective_depth_x) * (geometry.effective_depth_x * (1.0 - k)) ** 2
+        Icr = (1000.0 * k ** 3 * geometry.effective_depth_x ** 3) / 3.0 + n * As * (geometry.effective_depth_x * (1.0 - k)) ** 2
 
-        Ie = max(Icr, (Mcr / Ma) ** 3 * Ig + (1.0 - (Mcr / Ma) ** 3) * Icr)
+        # ACI 318M-25 §24.2.3.5
+        if Ma <= (2.0 / 3.0) * Mcr:
+            Ie = Ig
+        else:
+            factor_m = ((2.0 / 3.0) * Mcr / Ma) ** 2
+            Ie = Icr / (1.0 - factor_m * (1.0 - Icr / Ig))
+            Ie = max(Icr, min(Ie, Ig))
         cracked_grid = gross_def_grid * (Ig / Ie)
         return np.max(np.abs(cracked_grid)), cracked_grid
 
     def _calculate_minimum_slab_reinforcement(self, width: float, thickness: float, fy: float) -> float:
-        rho_temp = 0.0020 if fy <= 420 else 0.0018
+        rho_temp = 0.0020 if fy <= 420 else (0.0018 if fy <= 520 else max(0.0014, 0.0018 * 420.0 / fy))
         return rho_temp * width * thickness
+
+    def _get_provided_as(self, reinforcement: Optional[SlabReinforcement], geometry: SlabGeometry, fy: float) -> float:
+        """Return the governing bottom As (mm²/m) for deflection Icr calculation."""
+        if reinforcement is not None:
+            As_x = self.aci.get_bar_area(reinforcement.main_bars_x) * 1000.0 / reinforcement.main_spacing_x
+            As_y = self.aci.get_bar_area(reinforcement.main_bars_y) * 1000.0 / reinforcement.main_spacing_y
+            return max(As_x, As_y)
+        # Fallback to minimum if reinforcement not yet designed
+        return self._calculate_minimum_slab_reinforcement(1000, geometry.thickness, fy)
 
     def perform_complete_slab_design(self, geometry: SlabGeometry, loads: SlabLoads,
                                      material_props: MaterialProperties,
@@ -464,26 +479,12 @@ class ACI318M25SlabDesign:
                                                                       is_service=False)
         design_notes.extend(fea_notes)
 
-        # RUN 2: Dead Load
+        # RUN 2-4: Service Load Cases (dead, sustained, total)
         moments_d, _, _, d_grid = self._run_opensees_analysis(geometry, material_props, w_dead_mpa, is_service=True)
-        def_dead, _ = self.calculate_cracked_deflection(d_grid['W'], moments_d, geometry, material_props)
-
-        # RUN 3: Sustained Load
         moments_sus, _, _, sus_grid = self._run_opensees_analysis(geometry, material_props, w_sus_mpa, is_service=True)
-        def_sus, _ = self.calculate_cracked_deflection(sus_grid['W'], moments_sus, geometry, material_props)
-
-        # RUN 4: Total Service Load
         moments_tot, _, _, tot_grid = self._run_opensees_analysis(geometry, material_props, w_tot_mpa, is_service=True)
-        def_tot, cracked_def_grid = self.calculate_cracked_deflection(tot_grid['W'], moments_tot, geometry,
-                                                                      material_props)
 
-        def_live = max(0.0, def_tot - def_dead)
-        def_long = def_live + 2.0 * def_sus
-
-        # Override the ultimate W grid with cracked service deflection grid for the visual contour
-        ult_grid['W'] = cracked_def_grid
-        contour_b64s = self.generate_contour_plots(geometry, ult_grid)
-
+        # Design reinforcement BEFORE deflection check so Icr uses actual provided As
         bx, sx = self.design_flexural_reinforcement(moments.moment_x_positive, geometry.effective_depth_x,
                                                     geometry.thickness, material_props, design_notes, "+Mxx (Span X)",
                                                     preferred_bottom_bar)
@@ -500,6 +501,21 @@ class ACI318M25SlabDesign:
             self._calculate_minimum_slab_reinforcement(1000, geometry.thickness, material_props.fy), 1000,
             material_props.fy, geometry.thickness)
 
+        reinf = SlabReinforcement(bx, sx, by, sy, bsh, ssh, bxt, sxt, byt, syt)
+
+        # Deflection checks using actual provided reinforcement for Icr
+        def_dead, _ = self.calculate_cracked_deflection(d_grid['W'], moments_d, geometry, material_props, reinf)
+        def_sus, _ = self.calculate_cracked_deflection(sus_grid['W'], moments_sus, geometry, material_props, reinf)
+        def_tot, cracked_def_grid = self.calculate_cracked_deflection(tot_grid['W'], moments_tot, geometry,
+                                                                      material_props, reinf)
+
+        def_live = max(0.0, def_tot - def_dead)
+        def_long = def_live + 2.0 * def_sus
+
+        # Override the ultimate W grid with cracked service deflection grid for the visual contour
+        ult_grid['W'] = cracked_def_grid
+        contour_b64s = self.generate_contour_plots(geometry, ult_grid)
+
         def calc_dcr(mu, b_bar, s_bar, d):
             if mu <= 0: return 0.0
             As = self.aci.get_bar_area(b_bar) * 1000 / s_bar
@@ -513,8 +529,7 @@ class ACI318M25SlabDesign:
                       calc_dcr(moments.moment_y_negative, byt, syt, geometry.effective_depth_y))
 
         return SlabAnalysisResult(
-            SlabType.FEA_MODEL, moments,
-            SlabReinforcement(bx, sx, by, sy, bsh, ssh, bxt, sxt, byt, syt),
+            SlabType.FEA_MODEL, moments, reinf,
             def_live, def_long, max_dcr, design_notes, contour_b64s
         )
 

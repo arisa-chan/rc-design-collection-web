@@ -449,19 +449,55 @@ class ACI318M25ColumnDesign:
         Po = 0.85 * material_props.fc_prime * (Ag - steel_area) + material_props.fy * steel_area
         return (0.80 * Po if geometry.column_type == ColumnType.TIED else 0.85 * Po) / 1000
 
-    def check_slenderness_effects(self, geometry: ColumnGeometry, loads: ColumnLoads) -> Tuple[bool, float]:
-        r = geometry.depth / (2 * math.sqrt(3)) if geometry.shape == ColumnShape.RECTANGULAR else geometry.width / 4
-        kl_r = 1.0 * geometry.effective_length / r
+    def check_slenderness_effects(self, geometry: ColumnGeometry, loads: ColumnLoads,
+                                   material_props: MaterialProperties, As_provided: float) -> Tuple[bool, float]:
+        k = 1.0  # effective length factor, nonsway assumed
+        lu = geometry.clear_height
 
-        if loads.load_condition == LoadCondition.AXIAL_ONLY:
-            limit = 22.0
+        if geometry.shape == ColumnShape.RECTANGULAR:
+            r_x = geometry.width / (2 * math.sqrt(3))
+            r_y = geometry.depth / (2 * math.sqrt(3))
         else:
-            M1_M2 = min(abs(loads.moment_x), abs(loads.moment_y)) / max(abs(loads.moment_x),
-                                                                        abs(loads.moment_y)) if max(abs(loads.moment_x),
-                                                                                                    abs(loads.moment_y)) > 0 else 0.0
-            limit = max(22.0, min(34.0 - 12.0 * M1_M2, 40.0))
+            r_x = r_y = geometry.width / 4
 
-        return kl_r > limit, 1.0 + 0.1 * (kl_r - limit) / limit if kl_r > limit else 1.0
+        kl_r_x = k * lu / r_x
+        kl_r_y = k * lu / r_y
+        kl_r = max(kl_r_x, kl_r_y)
+
+        # Conservative limit: without distinct end moments per axis, use
+        # M1/M2 = 1.0 (single curvature) which gives limit = 22.0
+        limit = 22.0
+
+        if kl_r <= limit:
+            return False, 1.0
+
+        # ACI 318M-25 §6.6.4.5: δns = Cm / (1 - Pu / (0.75 * Pc))
+        # Cm = 1.0 (conservative, equivalent to uniform moment)
+        # Pc = π² * EI / (k * lu)²
+        # EI = 0.4 * Ec * Ig / (1 + βdns)  [ACI §6.6.4.4.4b, simpler form]
+        # βdns ≈ 0.6 for typical sustained load ratio
+        Ec = material_props.ec
+        fc_prime = material_props.fc_prime
+        Ag = geometry.width * geometry.depth if geometry.shape == ColumnShape.RECTANGULAR else math.pi * (geometry.width / 2) ** 2
+        beta_dns = 0.6
+
+        if kl_r_x >= kl_r_y:
+            Ig = geometry.depth * geometry.width ** 3 / 12.0  # about weak axis (x)
+        else:
+            Ig = geometry.width * geometry.depth ** 3 / 12.0  # about weak axis (y)
+
+        EI = 0.4 * Ec * Ig / (1 + beta_dns)
+        Pc = (math.pi ** 2 * EI) / (k * lu) ** 2 / 1000.0  # convert N to kN
+
+        Pu = abs(loads.axial_force)
+        Cm = 1.0
+        denom = 1.0 - Pu / (0.75 * Pc) if Pc > 0 else 0.0
+        if denom <= 0:
+            mag_factor = 2.0  # section is unstable; cap at 2.0
+        else:
+            mag_factor = max(1.0, Cm / denom)
+
+        return True, mag_factor
 
     def calculate_pm_interaction(self, geometry: ColumnGeometry, material_props: MaterialProperties,
                                  bar_layout: List[Tuple[float, float, float]], loads: ColumnLoads) -> float:
@@ -524,15 +560,19 @@ class ACI318M25ColumnDesign:
 
     def calculate_shear_capacity(self, geometry: ColumnGeometry, material_props: MaterialProperties,
                                  transverse_bar: str, spacing: float, legs_x: int, legs_y: int,
-                                 longitudinal_bars: List[str]) -> Tuple[float, float]:
+                                 longitudinal_bars: List[str], vc_zero: bool = False) -> Tuple[float, float]:
         if not transverse_bar or spacing <= 0: return 0.0, 0.0
         tie_diameter = self.aci.get_bar_diameter(transverse_bar)
         long_bar_diameter = self.aci.get_bar_diameter(longitudinal_bars[0]) if longitudinal_bars else 20.0
         dx = geometry.width - geometry.cover - tie_diameter - (long_bar_diameter / 2)
         dy = geometry.depth - geometry.cover - tie_diameter - (long_bar_diameter / 2)
 
-        Vc_x = 0.17 * math.sqrt(material_props.fc_prime) * geometry.depth * dx
-        Vc_y = 0.17 * math.sqrt(material_props.fc_prime) * geometry.width * dy
+        if vc_zero:
+            Vc_x = 0.0
+            Vc_y = 0.0
+        else:
+            Vc_x = 0.17 * math.sqrt(material_props.fc_prime) * geometry.depth * dx
+            Vc_y = 0.17 * math.sqrt(material_props.fc_prime) * geometry.width * dy
         Vs_x = min((legs_x * self.aci.get_bar_area(transverse_bar) * material_props.fyt * dx) / spacing,
                    0.66 * math.sqrt(material_props.fc_prime) * geometry.depth * dx)
         Vs_y = min((legs_y * self.aci.get_bar_area(transverse_bar) * material_props.fyt * dy) / spacing,
@@ -588,9 +628,12 @@ class ACI318M25ColumnDesign:
                         loads.axial_force * 1000 < (Ag * material_props.fc_prime / 20)):
                     current_notes.append(
                         "SMF Detailing: Vc taken as 0 per ACI 18.7.6.2.1 (Low axial load + high seismic shear).")
+                    phi_Vnx, phi_Vny = self.calculate_shear_capacity(
+                        geometry, material_props, tie_size, tie_spacing,
+                        tie_legs_x, tie_legs_y, longitudinal_bars, vc_zero=True)
 
             shear_util_x, shear_util_y = Ve_x / phi_Vnx if phi_Vnx > 0 else 0.0, Ve_y / phi_Vny if phi_Vny > 0 else 0.0
-            slenderness_req, mag_factor = self.check_slenderness_effects(geometry, loads)
+            slenderness_req, mag_factor = self.check_slenderness_effects(geometry, loads, material_props, As_provided)
             interaction_ratio = self.calculate_pm_interaction(geometry, material_props, bar_layout,
                                                               ColumnLoads(loads.axial_force,
                                                                           loads.moment_x * mag_factor,

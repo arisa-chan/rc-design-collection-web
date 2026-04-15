@@ -919,9 +919,9 @@ def setup_beam_routes(app):
                     air.Form(
                         *hidden_inputs,
                         air.Input(type="hidden", name="generate_pdf", value="1"),
-                        air.Button("🖨️ Print Summary", onclick="window.print()", type="button", style="background-color: #2563eb; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-weight: 600;"),
-                        air.Button("📄 Generate Detailed Report", type="submit", style="background-color: #2563eb; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-weight: 600;"),
-                        method="post", action="/beam/design", style="display: flex; justify-content: flex-end; align-items: center;"
+                        air.Button("Print Summary", onclick="window.print()", type="button", style="background-color: var(--accent); color: var(--bg-deep); border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-weight: 600;"),
+                        air.Button("Generate Detailed Report", type="submit", style="background-color: var(--accent); color: var(--bg-deep); border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-weight: 600;"),
+                        method="post", action="/beam/design", style="display: flex; justify-content: flex-end; align-items: center; gap: 8px;"
                     ),
                     style="margin-bottom: 24px;", class_="no-print"
                 ),
@@ -1003,10 +1003,14 @@ def setup_beam_routes(app):
                                       class_=f"status-badge {'pass' if delta_long <= lim_long else 'fail'}")),
                             style=f"padding: 16px; border-radius: 8px; border: 1px solid {'#bbf7d0' if delta_long <= lim_long else '#fecaca'}; background: {'#f0fdf4' if delta_long <= lim_long else '#fef2f2'};"),
                         air.Div(
-                            air.P(air.Strong("Properties: "),
-                                  f"M_cr = {M_cr:.1f} kN-m | I_g = {Ig / 1e6:.0f} × 10⁶ mm⁴ | I_cr = {Icr / 1e6:.0f} × 10⁶ mm⁴ | I_e = {Ie_tot / 1e6:.0f} × 10⁶ mm⁴"
-                                  + (f" | Mode: Cantilever ({defl_location})" if is_cantilever else " | Mode: Span beam"),
-                                  style="font-size: 13px; color: var(--text-muted);"),
+                            air.P(air.Strong("Properties"), style="font-size: 13px; color: var(--text-muted); margin-bottom: 4px;"),
+                            air.Ul(
+                                air.Li(air.Strong("M_cr"), air.Span(f"{M_cr:.1f} kN-m", class_="data-value")),
+                                air.Li(air.Strong("I_g"), air.Span(f"{Ig / 1e6:.0f} \u00d7 10\u2076 mm\u2074", class_="data-value")),
+                                air.Li(air.Strong("I_cr"), air.Span(f"{Icr / 1e6:.0f} \u00d7 10\u2076 mm\u2074", class_="data-value")),
+                                air.Li(air.Strong("I_e"), air.Span(f"{Ie_tot / 1e6:.0f} \u00d7 10\u2076 mm\u2074", class_="data-value")),
+                                air.Li(air.Strong("Mode"), air.Span(f"Cantilever ({defl_location})" if is_cantilever else "Span beam", class_="data-value")),
+                            ),
                             style="padding: 0 16px;"
                         ),
                         style="margin-bottom: 16px;"
@@ -1024,12 +1028,12 @@ def setup_beam_routes(app):
                 air.Div(
                     air.H2("Material Takeoff"),
                     air.Div(
-                        air.Div(air.Div("Concrete Volume", class_="metric-label"),
-                                air.Div(f"{vol_concrete:.2f} m³", class_="metric-value"), class_="metric-card"),
-                        air.Div(air.Div("Formwork Area", class_="metric-label"),
-                                air.Div(f"{area_formwork:.2f} m²", class_="metric-value"), class_="metric-card blue"),
-                        air.Div(air.Div("Rebar Weight", class_="metric-label"),
-                                air.Div(f"{total_kg:.1f} kg", class_="metric-value"), class_="metric-card green"),
+                        air.Div(air.Div("CONCRETE", class_="metric-label"),
+                                air.Div(f"{vol_concrete:.2f} m³", class_="metric-value"), class_="metric-card concrete"),
+                        air.Div(air.Div("FORMWORK", class_="metric-label"),
+                                air.Div(f"{area_formwork:.2f} m²", class_="metric-value"), class_="metric-card formwork"),
+                        air.Div(air.Div("REBAR WEIGHT", class_="metric-label"),
+                                air.Div(f"{total_kg:.1f} kg", class_="metric-value"), class_="metric-card rebar"),
                         class_="grid-3"
                     ),
                     air.Table(air.Thead(

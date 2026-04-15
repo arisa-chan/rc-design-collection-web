@@ -342,8 +342,9 @@ def setup_slab_routes(app):
                 es=200000.0, ec=4700 * math.sqrt(data.fc_prime), gamma_c=24.0, description="Custom Slab Material"
             )
 
-            dx = data.thickness - data.cover - 6.0
-            dy = dx - 12.0
+            db_bot = float(data.bottom_bar_size.replace('D', ''))
+            dx = data.thickness - data.cover - db_bot / 2.0
+            dy = dx - db_bot
 
             geom = SlabGeometry(
                 length_x=data.length_x, length_y=data.length_y,
@@ -388,10 +389,10 @@ def setup_slab_routes(app):
                     f"Immediate live deflection ({res.deflection_live:.1f} mm) exceeds L/360 limit ({def_lim_live:.1f} mm).")
             if res.deflection_long > def_lim_long:
                 res.design_notes.append(
-                    f"Long-term deflection ({res.deflection_long:.1f} mm) exceeds L/{data.deflection_limit:.0f} limit ({def_lim_long:.1f} mm).")
+                    f"Long-term deflection ({res.deflection_long:.1f} mm) exceeds L/{data.deflection_limit} limit ({def_lim_long:.1f} mm).")
 
-            notes_elements = [air.Ul(*[air.Li(f"ℹ️ {n}") for n in set(res.design_notes)],
-                                     class_="notes-list")] if res.design_notes else []
+            notes_elements = [air.Ul(*[air.Li(f"{'⚠️' if any(x in n for x in ['Violation', 'CRITICAL', 'inadequate', 'exceeded']) else 'ℹ️'} {n}") for n in
+                                       list(dict.fromkeys(res.design_notes))], class_="notes-list")] if res.design_notes else []
 
             qto = engine.calculate_qto(geom, res)
 
@@ -402,9 +403,12 @@ def setup_slab_routes(app):
 
             report_content = air.Main(
                 air.Div(
-                    air.Button("🖨️ Save as PDF", onclick="window.print()",
-                               style="background-color: var(--accent); color: var(--bg-deep);"),
-                    style="margin-bottom: 24px; display: flex; justify-content: flex-end;", class_="no-print"),
+                    air.Div(
+                        air.Button("Print Summary", onclick="window.print()",
+                                   style="background-color: var(--accent); color: var(--bg-deep); border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-weight: 600;"),
+                        style="display: flex; justify-content: flex-end; align-items: center; gap: 8px;"
+                    ),
+                    style="margin-bottom: 24px;", class_="no-print"),
 
                     air.Div(
                         air.H2("Design Results"),

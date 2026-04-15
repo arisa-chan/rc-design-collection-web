@@ -1,5 +1,6 @@
 import air
 from air import AirField, AirResponse
+from fastapi.responses import Response
 from pydantic import BaseModel
 import math
 import json
@@ -7,6 +8,7 @@ from datetime import date
 
 from aci318m25 import MaterialProperties
 from aci318m25_complete import ACI318M25MemberLibrary
+from column_pdf import generate_column_report
 from aci318m25_column import (
     ACI318M25ColumnDesign, ColumnGeometry, ColumnLoads, ColumnShape, ColumnType,
     LoadCondition, SeismicDesignCategory, FrameSystem, JointBeamElement, JointColumnElement
@@ -48,6 +50,8 @@ class ColumnDesignModel(BaseModel):
     bot_muy: float = AirField(default=90.0)
     bot_vux: float = AirField(default=120.0)
     bot_vuy: float = AirField(default=90.0)
+
+    generate_pdf: str = AirField(default="")
 
     top_bx1_exists: str = AirField(default="yes")
     top_bx1_b: float = AirField(default=300.0)
@@ -536,6 +540,7 @@ def setup_column_routes(app):
             ]
 
             sc_wb_element = ""
+            j_res = None
             if data.sdc in ["D", "E", "F"] and data.frame_system == "special":
                 j_res = engine.evaluate_top_joint_seismic(
                     geom, mat, res,
@@ -604,13 +609,32 @@ def setup_column_routes(app):
             tie_hinge_str = f"{res.reinforcement.tie_legs_x}x{res.reinforcement.tie_legs_y} legs {res.reinforcement.tie_bars} @ {res.reinforcement.tie_spacing:.0f} mm"
             tie_mid_str = f"{res.reinforcement.tie_legs_x}x{res.reinforcement.tie_legs_y} legs {res.reinforcement.tie_bars} @ {s_outside:.0f} mm"
 
-            notes_elements = [air.Ul(*[air.Li(f"{'⚠️' if 'Violation' in n or 'CRITICAL' in n else 'ℹ️'} {n}") for n in
-                                       set(res.design_notes)], class_="notes-list")] if res.design_notes else []
+            if data.generate_pdf == "1":
+                pdf_bytes = generate_column_report(data, mat, geom, loads, engine, res, n_bars, s_outside, qto, j_res)
+                return Response(
+                    content=pdf_bytes,
+                    media_type="application/pdf",
+                    headers={"Content-Disposition": 'attachment; filename="column_report.pdf"'}
+                )
+
+            notes_elements = [air.Ul(*[air.Li(f"{'⚠️' if any(x in n for x in ['Violation', 'CRITICAL', 'inadequate', 'exceeded']) else 'ℹ️'} {n}") for n in
+                                       list(dict.fromkeys(res.design_notes))], class_="notes-list")] if res.design_notes else []
+
+            hidden_inputs = [air.Input(type="hidden", name=k, value=str(v)) for k, v in data.model_dump().items() if k != "generate_pdf"]
+            if "csrf_token" in form_data:
+                hidden_inputs.append(air.Input(type="hidden", name="csrf_token", value=form_data.get("csrf_token")))
 
             report_content = air.Main(
                 air.Div(
-                    air.Button("🖨️ Save as PDF", onclick="window.print()", style="background-color: var(--secondary);"),
-                    style="margin-bottom: 24px; display: flex; justify-content: flex-end;", class_="no-print"),
+                    air.Form(
+                        *hidden_inputs,
+                        air.Input(type="hidden", name="generate_pdf", value="1"),
+                        air.Button("Print Summary", onclick="window.print()", type="button", style="background-color: var(--accent); color: var(--bg-deep); border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-weight: 600;"),
+                        air.Button("Generate Detailed Report", type="submit", style="background-color: var(--accent); color: var(--bg-deep); border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-weight: 600;"),
+                        method="post", action="/column/design", style="display: flex; justify-content: flex-end; align-items: center; gap: 8px;"
+                    ),
+                    style="margin-bottom: 24px;", class_="no-print"
+                ),
                 air.Div(
                     air.H2("Project Information"),
                     air.Div(
@@ -667,12 +691,12 @@ def setup_column_routes(app):
                         class_="card"
                         ),
                 air.Div(air.H2("Material Takeoff"), air.Div(
-                    air.Div(air.Div("Concrete", class_="metric-label"),
-                            air.Div(f"{qto.volume:.2f} m³", class_="metric-value"), class_="metric-card"),
-                    air.Div(air.Div("Formwork", class_="metric-label"),
-                            air.Div(f"{qto.formwork:.2f} m²", class_="metric-value"), class_="metric-card blue"),
-                    air.Div(air.Div("Rebar Weight", class_="metric-label"),
-                            air.Div(f"{qto.total_weight:.1f} kg", class_="metric-value"), class_="metric-card green"),
+                    air.Div(air.Div("CONCRETE", class_="metric-label"),
+                            air.Div(f"{qto.volume:.2f} m³", class_="metric-value"), class_="metric-card concrete"),
+                    air.Div(air.Div("FORMWORK", class_="metric-label"),
+                            air.Div(f"{qto.formwork:.2f} m²", class_="metric-value"), class_="metric-card formwork"),
+                    air.Div(air.Div("REBAR WEIGHT", class_="metric-label"),
+                            air.Div(f"{qto.total_weight:.1f} kg", class_="metric-value"), class_="metric-card rebar"),
                     class_="grid-3"),
                         air.Table(air.Thead(
                             air.Tr(air.Th("Location"), air.Th("Size"), air.Th("Qty"), air.Th("Cut Length"),

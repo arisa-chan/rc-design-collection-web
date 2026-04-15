@@ -26,19 +26,19 @@ def index(request: air.Request):
                 air.Div(
                     air.Div(
                         air.H3("RC Beam Designer"),
-                        air.P("v0.8.1 beta.", style="margin-bottom: 20px; color: var(--text-secondary);"),
+                        air.P("v0.8.2 beta.", style="margin-bottom: 20px; color: var(--text-secondary);"),
                         air.A("Launch", href="/beam", class_="button"),
                         class_="module-card"
                     ),
                     air.Div(
                         air.H3("RC Column Designer"),
-                        air.P("v0.8 beta.", style="color: var(--text-muted); margin-bottom: 20px;"),
+                        air.P("v0.8.1 beta.", style="color: var(--text-muted); margin-bottom: 20px;"),
                         air.A("Launch", href="/column", class_="button"),
                         class_="module-card"
                     ),
                     air.Div(
                         air.H3("RC Slab Designer"),
-                        air.P("v0.8 beta.", style="color: var(--text-muted); margin-bottom: 20px;"),
+                        air.P("v0.8.1 beta.", style="color: var(--text-muted); margin-bottom: 20px;"),
                         air.A("Launch", href="/slab", class_="button"),
                         class_="module-card"
                     ),

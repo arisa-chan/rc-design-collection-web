@@ -156,8 +156,14 @@ class ACI318M25BeamDesign:
                                            material_props: MaterialProperties) -> float:
         fc_prime, fy_pr = material_props.fc_prime, 1.25 * material_props.fy
         b, d, d_prime = beam_geometry.width, beam_geometry.effective_depth, beam_geometry.cover + 20.0
-        a = max(0.01, (As * fy_pr - As_prime * fy_pr) / (0.85 * fc_prime * b))
-        return max(0.0, (As * fy_pr * (d - a / 2) + As_prime * fy_pr * (a / 2 - d_prime)) / 1e6)
+        a_net = (As * fy_pr - As_prime * fy_pr) / (0.85 * fc_prime * b)
+        if a_net > 0:
+            # Doubly-reinforced: compression steel yields, equilibrium holds
+            return max(0.0, (As * fy_pr * (d - a_net / 2) + As_prime * fy_pr * (a_net / 2 - d_prime)) / 1e6)
+        else:
+            # As < As': net compression block is negative, use singly-reinforced
+            a = As * fy_pr / (0.85 * fc_prime * b)
+            return max(0.0, As * fy_pr * (d - a / 2) / 1e6)
 
     def calculate_minimum_reinforcement_ratio(self, fc_prime: float, fy: float) -> float:
         return max(1.4 / fy, 0.25 * math.sqrt(fc_prime) / fy)

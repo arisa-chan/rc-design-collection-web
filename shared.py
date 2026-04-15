@@ -234,7 +234,7 @@ p.subtitle {
     letter-spacing: 0.05em;
     color: #ffffff;
     line-height: 1.4;
-    white-space: nowrap;
+    word-break: break-word;
 }
 .status-badge.pass {
     background: linear-gradient(135deg, #16A34A, #15803D);
@@ -442,7 +442,7 @@ li {
     justify-content: space-between;
     align-items: center;
     flex-wrap: wrap;
-    gap: 4px;
+    gap: 8px;
 }
 
 .data-value {
@@ -451,7 +451,9 @@ li {
     color: var(--accent);
     font-size: 14px;
     text-align: right;
-    flex-shrink: 0;
+    flex-shrink: 1;
+    min-width: 0;
+    word-break: break-word;
     margin-left: 8px;
 }
 
