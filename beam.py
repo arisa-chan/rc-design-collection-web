@@ -545,7 +545,7 @@ def setup_beam_routes(app):
                             render_force_inputs("Right support", "right", data, show_gravity=True),
                             class_="grid-3"
                         ),
-                        air.Button("Perform Design", type="submit",
+                        air.Button("Run Analysis", type="submit",
                                    style="width: 100%; font-size: 18px; margin-top: 32px;"),
                         class_="card"
                     ),
@@ -901,6 +901,7 @@ def setup_beam_routes(app):
                     "delta_live": delta_live, "delta_long": delta_long,
                     "lim_live": lim_live, "lim_long": lim_long,
                     "M_A_tot": M_A_tot, "M_B_tot": M_B_tot,
+                    "M_a": M_fixed_tot if is_cantilever else M_tot,
                     "is_cantilever": is_cantilever, "defl_location": defl_location
                 }
                 pdf_bytes = generate_beam_report(data, mat_props, beam_geom, res_left, res_mid, res_right, defl_data)

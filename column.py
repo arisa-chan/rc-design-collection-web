@@ -455,7 +455,7 @@ def setup_column_routes(app):
                             style=f"display: {'block' if data.sdc in ['D', 'E', 'F'] and data.frame_system == 'special' else 'none'}; margin-top: 24px; padding: 24px; background: #eff6ff; border-radius: 8px;"
                         ),
                         render_top_joint_modal("topModal", data),
-                        air.Button("Analyze Column", type="submit",
+                        air.Button("Run Analysis", type="submit",
                                    style="width: 100%; font-size: 18px; margin-top: 32px;"),
                         class_="card"
                     ), method="post", action="/column/design"

@@ -330,7 +330,7 @@ def _bar_options(selected):
     ]
 
 
-BAR_SELECT_STYLE = "font-family: 'IBM Plex Mono', monospace; font-size: 15px; padding: 10px 14px; border: 2px solid #e5e7eb; border-radius: 12px; width: 100%;"
+
 
 
 # ----------------------------------------------------------------------
@@ -508,7 +508,6 @@ def setup_footing_routes(app):
                                 air.Select(
                                     *_bar_options(data.bottom_bar_size),
                                     name="bottom_bar_size",
-                                    style=BAR_SELECT_STYLE,
                                 ),
                                 class_="form-group",
                             ),
@@ -517,7 +516,6 @@ def setup_footing_routes(app):
                                 air.Select(
                                     *_bar_options(data.top_bar_size),
                                     name="top_bar_size",
-                                    style=BAR_SELECT_STYLE,
                                 ),
                                 class_="form-group",
                             ),
@@ -684,9 +682,9 @@ def setup_footing_routes(app):
                             style="margin-top: 16px; padding: 12px 16px; background: #eff6ff; border-radius: 8px; border: 1px solid #bfdbfe;",
                         ),
                         air.Button(
-                            "Analyze Footing",
+                            "Run Analysis",
                             type="submit",
-                            style="width: 100%; font-size: 18px; margin-top: 24px;",
+                            style="width: 100%; font-size: 18px; margin-top: 32px;",
                         ),
                         class_="card",
                     ),
@@ -949,7 +947,7 @@ def setup_footing_routes(app):
                             style="background-color: var(--accent); color: var(--bg-deep); border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-weight: 600;",
                         ),
                         air.A(
-                            "Download PDF",
+                            "Download PDF Report",
                             href="/footing/pdf",
                             target="_blank",
                             style="background-color: var(--accent); color: var(--bg-deep); text-decoration: none; padding: 8px 16px; border-radius: 4px; font-weight: 600;",
@@ -1243,16 +1241,7 @@ def setup_footing_routes(app):
                     ),
                     class_="card",
                 ),
-                # ── Detailed Calculations (with toggle and KaTeX) ──
-                air.Div(
-                    air.Button(
-                        "Show Calculations",
-                        type="button",
-                        id="toggleCalcsBtn",
-                        onclick="toggleCalcs()",
-                        style="width: 100%; font-size: 16px; background: #1e40af; color: white; padding: 12px; border-radius: 8px; cursor: pointer; border: none;",
-                    ),
-                ),
+                # ── Detailed Calculations ──
                 air.Div(
                     air.Div(
                         air.Div(
@@ -1475,7 +1464,7 @@ def setup_footing_routes(app):
                         class_="grid-2",
                     ),
                     id="detailedCalcs",
-                    style="display: none; margin-top: 16px;",
+                    style="margin-top: 16px;",
                     class_="card",
                 ),
                 # ── Material Takeoff (cards) ──
@@ -1543,27 +1532,17 @@ def setup_footing_routes(app):
                 '<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>',
                 '<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>',
                 """<script>
-function toggleCalcs() {
-    var el = document.getElementById('detailedCalcs');
-    var btn = document.getElementById('toggleCalcsBtn');
-    if (el.style.display === 'none') {
-        el.style.display = 'block';
-        btn.textContent = 'Hide Calculations';
-        if (typeof renderMathInElement === 'function' && !el.dataset.katexRendered) {
-            renderMathInElement(el, {
-                delimiters: [
-                    {left: "$$", right: "$$", display: true},
-                    {left: "$", right: "$", display: false}
-                ],
-                throwOnError: false
-            });
-            el.dataset.katexRendered = 'true';
-        }
-    } else {
-        el.style.display = 'none';
-        btn.textContent = 'Show Calculations';
+document.addEventListener('DOMContentLoaded', function() {
+    if (typeof renderMathInElement !== 'undefined') {
+        renderMathInElement(document.body, {
+            delimiters: [
+                {left: "$$", right: "$$", display: true},
+                {left: "$", right: "$", display: false}
+            ],
+            throwOnError: false
+        });
     }
-}
+});
 </script>""",
             ]
 

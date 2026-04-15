@@ -4,6 +4,7 @@ from pydantic import BaseModel
 import math
 import json
 from datetime import date
+from starlette.responses import Response
 
 from aci318m25 import MaterialProperties
 from aci318m25_slab import (
@@ -11,6 +12,7 @@ from aci318m25_slab import (
     LoadPattern, EdgeCondition, EdgeSupport, EdgeContinuity
 )
 from shared import blueprint_layout
+from slab_pdf import generate_slab_report
 
 
 class SlabDesignModel(BaseModel):
@@ -406,6 +408,8 @@ def setup_slab_routes(app):
                     air.Div(
                         air.Button("Print Summary", onclick="window.print()",
                                    style="background-color: var(--accent); color: var(--bg-deep); border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-weight: 600;"),
+                        air.A("Download PDF Report", href="/slab/pdf", target="_blank",
+                              style="background-color: var(--accent); color: var(--bg-deep); text-decoration: none; padding: 8px 16px; border-radius: 4px; font-weight: 600;"),
                         style="display: flex; justify-content: flex-end; align-items: center; gap: 8px;"
                     ),
                     style="margin-bottom: 24px;", class_="no-print"),
@@ -545,3 +549,112 @@ def setup_slab_routes(app):
                 ),
                 air.Main(air.Div(air.H2("Exception"), air.P(str(e)), class_="card"))
             )), media_type="text/html")
+
+    @app.get("/slab/pdf")
+    async def slab_pdf_export(request: air.Request):
+        cookie_inputs = request.cookies.get("slab_inputs")
+        if not cookie_inputs:
+            return AirResponse(
+                content="No saved design found. Please run an analysis first.",
+                status_code=400,
+            )
+
+        try:
+            data_dict = json.loads(cookie_inputs)
+            data = SlabDesignModel(**data_dict)
+
+            if not data.proj_date:
+                data.proj_date = date.today().strftime("%Y-%m-%d")
+
+            engine = ACI318M25SlabDesign()
+            mat_props = MaterialProperties(
+                fc_prime=data.fc_prime,
+                fy=data.fy,
+                fu=data.fy * 1.25,
+                fyt=data.fy,
+                fut=data.fy * 1.25,
+                es=200000.0,
+                ec=4700 * math.sqrt(data.fc_prime),
+                gamma_c=24.0,
+                description="Custom Slab Material",
+            )
+
+            db_bot = float(data.bottom_bar_size.replace("D", ""))
+            dx = data.thickness - data.cover - db_bot / 2.0
+            dy = dx - db_bot
+
+            geom = SlabGeometry(
+                length_x=data.length_x,
+                length_y=data.length_y,
+                thickness=data.thickness,
+                cover=data.cover,
+                effective_depth_x=dx,
+                effective_depth_y=dy,
+                edge_top=EdgeCondition(
+                    EdgeSupport(data.edge_top_support),
+                    EdgeContinuity(data.edge_top_cont),
+                    data.edge_top_wall_t,
+                    data.edge_top_beam_b,
+                    data.edge_top_beam_h,
+                    data.edge_top_col_cx,
+                    data.edge_top_col_cy,
+                ),
+                edge_bottom=EdgeCondition(
+                    EdgeSupport(data.edge_bot_support),
+                    EdgeContinuity(data.edge_bot_cont),
+                    data.edge_bot_wall_t,
+                    data.edge_bot_beam_b,
+                    data.edge_bot_beam_h,
+                    data.edge_bot_col_cx,
+                    data.edge_bot_col_cy,
+                ),
+                edge_left=EdgeCondition(
+                    EdgeSupport(data.edge_left_support),
+                    EdgeContinuity(data.edge_left_cont),
+                    data.edge_left_wall_t,
+                    data.edge_left_beam_b,
+                    data.edge_left_beam_h,
+                    data.edge_left_col_cx,
+                    data.edge_left_col_cy,
+                ),
+                edge_right=EdgeCondition(
+                    EdgeSupport(data.edge_right_support),
+                    EdgeContinuity(data.edge_right_cont),
+                    data.edge_right_wall_t,
+                    data.edge_right_beam_b,
+                    data.edge_right_beam_h,
+                    data.edge_right_col_cx,
+                    data.edge_right_col_cy,
+                ),
+            )
+
+            self_weight_knm2 = (data.thickness / 1000.0) * 24.0
+            loads = SlabLoads(
+                self_weight=self_weight_knm2,
+                live_load=data.live_load,
+                superimposed_dead=data.superimposed_dead,
+                load_pattern=LoadPattern.UNIFORM,
+                load_factors={"D": 1.2, "L": 1.6},
+            )
+
+            res = engine.perform_complete_slab_design(
+                geom,
+                loads,
+                mat_props,
+                preferred_bottom_bar=data.bottom_bar_size,
+                preferred_top_bar=data.top_bar_size,
+            )
+
+            pdf_bytes = generate_slab_report(data, mat_props, geom, loads, res)
+            return Response(
+                content=pdf_bytes,
+                media_type="application/pdf",
+                headers={
+                    "Content-Disposition": 'attachment; filename="slab_report.pdf"'
+                },
+            )
+
+        except Exception as e:
+            return AirResponse(
+                content=f"Error generating PDF: {str(e)}", status_code=500
+            )
