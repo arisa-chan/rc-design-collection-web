@@ -1323,34 +1323,35 @@ class ACI318M25FootingDesign:
             Ka,
         )
 
+        # Build result using explicit keyword arguments to ensure correct field mapping
         result = FootingAnalysisResult(
-            qmax_total,
-            qmin_total,
-            bearing_ok,
-            one_way_ok,
-            two_way_ok,
-            reinf,
-            dcr,
-            list(set(notes)),
-            max(M_x_pos, M_x_neg),
-            max(M_y_pos, M_y_neg),
-            V_x,
-            V_y,
-            plots,
-            overturning_ok,
-            fs_ot_x,
-            fs_ot_y,
-            bearing_limit,
-            detailed_calcs,
-            max(one_way_demand_x, one_way_demand_y),
-            min(one_way_capacity_x, one_way_capacity_y),
-            two_way_demand,
-            two_way_cap,
+            bearing_pressure_max=qmax_total,
+            bearing_pressure_min=qmin_total,
+            bearing_ok=bearing_ok,
+            one_way_shear_ok=one_way_ok,
+            two_way_shear_ok=two_way_ok,
+            reinforcement=reinf,
+            utilization_ratio=dcr,
+            design_notes=list(set(notes)),
+            fea_moment_x=max(M_x_pos, M_x_neg),
+            fea_moment_y=max(M_y_pos, M_y_neg),
+            fea_shear_x=V_x,
+            fea_shear_y=V_y,
+            contours=plots,
+            overturning_ok=overturning_ok,
+            fs_overturning_x=fs_ot_x,
+            fs_overturning_y=fs_ot_y,
+            bearing_limit_used=bearing_limit,
+            detailed_calcs=detailed_calcs,
+            fea_moment_x_pos=M_x_pos,
+            fea_moment_x_neg=M_x_neg,
+            fea_moment_y_pos=M_y_pos,
+            fea_moment_y_neg=M_y_neg,
+            one_way_shear_demand=max(one_way_demand_x, one_way_demand_y),
+            one_way_shear_capacity=min(one_way_capacity_x, one_way_capacity_y),
+            two_way_shear_demand=two_way_demand,
+            two_way_shear_capacity=two_way_cap,
         )
-        result.fea_moment_x_pos = M_x_pos
-        result.fea_moment_x_neg = M_x_neg
-        result.fea_moment_y_pos = M_y_pos
-        result.fea_moment_y_neg = M_y_neg
         return result
 
     def calculate_qto(self, geom: FootingGeometry, res: FootingAnalysisResult) -> dict:
