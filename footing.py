@@ -1,5 +1,6 @@
 import air
 from air import AirField, AirResponse
+from fastapi.responses import Response
 from pydantic import BaseModel
 import json
 import hashlib
@@ -951,7 +952,7 @@ def setup_footing_routes(app):
                             "Download PDF",
                             href="/footing/pdf",
                             target="_blank",
-                            style="background-color: #4F46E5; color: white; text-decoration: none; padding: 8px 16px; border-radius: 4px; font-weight: 600;",
+                            style="background-color: var(--accent); color: var(--bg-deep); text-decoration: none; padding: 8px 16px; border-radius: 4px; font-weight: 600;",
                         ),
                         style="display: flex; justify-content: flex-end; align-items: center; gap: 8px;",
                     ),
@@ -1604,4 +1605,98 @@ function toggleCalcs() {
                     )
                 ),
                 media_type="text/html",
+            )
+
+    @app.get("/footing/pdf")
+    async def footing_pdf_export(request: air.Request):
+        cookie_inputs = request.cookies.get("footing_inputs")
+        if not cookie_inputs:
+            return AirResponse(
+                content="No saved design found. Please perform an analysis first.",
+                status_code=400,
+            )
+
+        try:
+            data_dict = json.loads(cookie_inputs)
+            data = FootingDesignModel(**data_dict)
+
+            is_transient = data_dict.get("transient_loads", "0") in (
+                "1",
+                "on",
+                "true",
+                True,
+            )
+
+            engine = ACI318M25FootingDesign()
+            mat = MaterialProperties(
+                fc_prime=data.fc_prime,
+                fy=data.fy,
+                fu=data.fy * 1.25,
+                fyt=data.fy,
+                fut=data.fy * 1.25,
+                es=200000.0,
+                ec=base_aci_lib.aci.get_concrete_modulus(data.fc_prime),
+                gamma_c=24.0,
+                description="",
+            )
+
+            geom = FootingGeometry(
+                data.length,
+                data.width,
+                data.thickness,
+                data.cover,
+                data.col_w,
+                data.col_d,
+                FootingType.ISOLATED,
+                data.ecc_x,
+                data.ecc_y,
+                data.soil_ks,
+            )
+            soil = SoilProperties(
+                data.soil_qa,
+                data.soil_unit_weight,
+                data.soil_depth,
+                data.soil_friction_angle,
+            )
+            loads = FootingLoads(
+                data.pu_ult,
+                data.mux_ult,
+                data.muy_ult,
+                0,
+                0,
+                data.pu_srv,
+                data.mux_srv,
+                data.muy_srv,
+                data.surcharge_dl,
+                data.surcharge_ll,
+            )
+
+            cache_key = _footing_cache_key(data, geom, loads, soil, mat) + (
+                "_t" if is_transient else "_n"
+            )
+            res = _load_footing_cache(cache_key)
+
+            if res is None:
+                res = engine.perform_complete_design(
+                    geom,
+                    loads,
+                    soil,
+                    mat,
+                    is_transient=is_transient,
+                    preferred_bottom_bar=data.bottom_bar_size,
+                    preferred_top_bar=data.top_bar_size,
+                )
+                _save_footing_cache(cache_key, res)
+
+            pdf_bytes = generate_footing_report(data, mat, geom, loads, res)
+            return Response(
+                content=pdf_bytes,
+                media_type="application/pdf",
+                headers={
+                    "Content-Disposition": 'attachment; filename="footing_report.pdf"'
+                },
+            )
+        except Exception as e:
+            return AirResponse(
+                content=f"Error generating PDF: {str(e)}", status_code=500
             )

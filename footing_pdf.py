@@ -185,59 +185,69 @@ def generate_footing_report(data, mat, geom, loads, res):
         gross_limit = data.soil_qa * 1.33 if data.transient_loads else data.soil_qa
         net_limit = net_qa * 1.33 if data.transient_loads else net_qa
 
-        doc.append(bold("Net allowable bearing:"))
+        doc.append(bold("Soil Overburden & Surcharge:"))
         doc.append(
             Math(
                 data=[
                     NoEscape(
-                        rf"q_{{a,net}} = q_a - \gamma D - w_s = {data.soil_qa:.0f} - {data.soil_unit_weight:.1f}\times{data.soil_depth / 1000:.3f} - {surcharge_total:.1f} = {net_qa:.1f}\,\text{{kPa}}"
+                        rf"q_{{overburden}} = \gamma_{{soil}} \cdot D_{{soil}} = {data.soil_unit_weight:.1f} \times {data.soil_depth / 1000:.3f} = {soil_overburden:.1f}\,\text{{kPa}}"
+                    )
+                ]
+            )
+        )
+        doc.append(
+            Math(
+                data=[
+                    NoEscape(
+                        rf"q_{{surcharge}} = w_{{DL}} + w_{{LL}} = {data.surcharge_dl:.1f} + {data.surcharge_ll:.1f} = {surcharge_total:.1f}\,\text{{kPa}}"
                     )
                 ]
             )
         )
 
-        doc.append(Math(data=[NoEscape(rf"q_{{a,net}} = {net_qa:.1f}\,\text{{kPa}}")]))
+        doc.append(bold("Net Allowable Bearing Capacity:"))
+        doc.append(
+            Math(
+                data=[
+                    NoEscape(
+                        rf"q_{{a,net}} = q_a - q_{{overburden}} - q_{{surcharge}} = {data.soil_qa:.0f} - {soil_overburden:.1f} - {surcharge_total:.1f} = {net_qa:.1f}\,\text{{kPa}}"
+                    )
+                ]
+            )
+        )
 
         if data.transient_loads:
             doc.append(
-                NoEscape(rf"Transient case: limit $\times 1.33 = {net_limit:.1f}$ kPa")
+                NoEscape(
+                    rf"Transient case increases bearing capacity by 33\%: $q_{{limit}} = {net_qa:.1f} \times 1.33 = {net_limit:.1f}$ kPa"
+                )
             )
+            doc.append(NoEscape(r"\\"))
 
-        doc.append(bold("Maximum pressure from FEA:"))
+        doc.append(bold("Maximum Pressure from FEA (Gross):"))
         doc.append(
             Math(
                 data=[
                     NoEscape(
-                        rf"q_{{max}} = {res.bearing_pressure_max:.1f}\,\text{{kPa}}"
+                        rf"q_{{max,gross}} = {res.bearing_pressure_max:.1f}\,\text{{kPa}}"
                     )
                 ]
             )
         )
-        doc.append(bold("Minimum pressure from FEA:"))
+        doc.append(bold("Maximum Net Pressure (Demand):"))
+        qmax_net = res.bearing_pressure_max - soil_overburden - surcharge_total
         doc.append(
             Math(
                 data=[
                     NoEscape(
-                        rf"q_{{min}} = {res.bearing_pressure_min:.1f}\,\text{{kPa}}"
+                        rf"q_{{max,net}} = q_{{max,gross}} - q_{{overburden}} - q_{{surcharge}} = {res.bearing_pressure_max:.1f} - {soil_overburden:.1f} - {surcharge_total:.1f} = {qmax_net:.1f}\,\text{{kPa}}"
                     )
                 ]
             )
         )
 
         # Check status
-        qmax_net = res.bearing_pressure_max - soil_overburden - surcharge_total
         net_ok = qmax_net <= net_limit
-
-        doc.append(
-            Math(
-                data=[
-                    NoEscape(
-                        rf"q_{{max,net}} = q_{{max}} - \gamma D - w_s = {res.bearing_pressure_max:.1f} - {soil_overburden:.1f} - {surcharge_total:.1f} = {qmax_net:.1f}\,\text{{kPa}}"
-                    )
-                ]
-            )
-        )
-
         status = "PASS" if net_ok else "FAIL"
         doc.append(
             bold(
@@ -248,16 +258,15 @@ def generate_footing_report(data, mat, geom, loads, res):
     # --- Section 4: One-Way Shear ---
     with doc.create(Section("One-Way Shear Check (ACI 318M-25)")):
         # Compute effective depth
-        # d_eff = thickness - cover - db/2 per the changes
         db_bot = aci_tool.get_bar_diameter(data.bottom_bar_size)
         d_eff = data.thickness - data.cover - db_bot / 2.0
 
-        doc.append(bold("Effective depth (bottom):"))
+        doc.append(bold("Effective Depth:"))
         doc.append(
             Math(
                 data=[
                     NoEscape(
-                        rf"d = h - c - d_b/2 = {data.thickness} - {data.cover} - {db_bot}/2 = {d_eff:.1f}\,\text{{mm}}"
+                        rf"d = h - c - d_b/2 = {data.thickness} - {data.cover} - {db_bot:.1f}/2 = {d_eff:.1f}\,\text{{mm}}"
                     )
                 ]
             )
@@ -268,12 +277,12 @@ def generate_footing_report(data, mat, geom, loads, res):
         vc = 0.17 * math.sqrt(data.fc_prime)  # MPa
         phi_vc = phi_v * vc * 1000 * d_eff / 1000  # kN/m
 
-        doc.append(bold("Concrete shear capacity:"))
+        doc.append(bold("Concrete Shear Capacity (per meter width):"))
         doc.append(
             Math(
                 data=[
                     NoEscape(
-                        rf"\phi V_c = \phi (0.17 \sqrt{{f'_c}}) b d = 0.75 \times 0.17 \times \sqrt{{{data.fc_prime}}} \times 1000 \times {d_eff:.1f} / 1000 = {phi_vc:.1f}\,\text{{kN/m}}"
+                        rf"\phi V_c = \phi (0.17 \sqrt{{f'_c}}) b d = 0.75 \times 0.17 \times \sqrt{{{data.fc_prime}}} \times 1000 \times {d_eff:.1f} \times 10^{{-3}} = {phi_vc:.1f}\,\text{{kN/m}}"
                     )
                 ]
             )
@@ -285,15 +294,15 @@ def generate_footing_report(data, mat, geom, loads, res):
         shear_ratio = shear_demand / shear_capacity if shear_capacity > 0 else 999
         shear_ok = shear_ratio <= 1.0
 
-        doc.append(bold("Shear demand from FEA:"))
+        doc.append(bold("Maximum Shear Demand from FEA:"))
         doc.append(Math(data=[NoEscape(rf"V_u = {shear_demand:.1f}\,\text{{kN/m}}")]))
-        doc.append(bold("Check:"))
+
         status = "PASS" if shear_ok else "FAIL"
         doc.append(
             Math(
                 data=[
                     NoEscape(
-                        rf"DCR = V_u / \phi V_c = {shear_demand:.1f} / {shear_capacity:.1f} = {shear_ratio:.2f} \quad \textbf{{{status}}}"
+                        rf"DCR = \frac{{V_u}}{{\phi V_c}} = \frac{{{shear_demand:.1f}}}{{{phi_vc:.1f}}} = {shear_ratio:.2f} \quad \textbf{{{status}}}"
                     )
                 ]
             )
@@ -308,7 +317,7 @@ def generate_footing_report(data, mat, geom, loads, res):
         b2 = c2 + d_eff
         bo = 2 * b1 + 2 * b2
 
-        doc.append(bold("Critical perimeter:"))
+        doc.append(bold("Critical Perimeter at $d/2$ from column face:"))
         doc.append(
             Math(
                 data=[
@@ -319,8 +328,6 @@ def generate_footing_report(data, mat, geom, loads, res):
             )
         )
 
-        # Shear demand
-        Vu = res.two_way_shear_demand  # kN
         # Shear capacity from concrete
         beta = max(c1, c2) / min(c1, c2)
         alphas = 40  # interior column
@@ -328,36 +335,62 @@ def generate_footing_report(data, mat, geom, loads, res):
         vc2 = 0.083 * (alphas * d_eff / bo + 2) * math.sqrt(data.fc_prime)
         vc3 = 0.33 * math.sqrt(data.fc_prime)
         vc = min(vc1, vc2, vc3)
-        phi_vc = phi_v * vc
-        phi_Vn = phi_vc * bo * d_eff / 1000  # kN
-        two_way_ratio = Vu / phi_Vn if phi_Vn > 0 else 999
-        two_way_ok = two_way_ratio <= 1.0
+        phi_vc_2w = phi_v * vc
+        phi_Vn = phi_vc_2w * bo * d_eff / 1000  # kN
+
+        doc.append(bold("Concrete Shear Strength ($v_c$ is minimum of):"))
+        doc.append(
+            Math(
+                data=[
+                    NoEscape(
+                        rf"v_{{c,1}} = 0.17(1+2/\beta)\sqrt{{f'_c}} = 0.17(1+2/{beta:.2f})\sqrt{{{data.fc_prime}}} = {vc1:.3f}\,\text{{MPa}}"
+                    )
+                ]
+            )
+        )
+        doc.append(
+            Math(
+                data=[
+                    NoEscape(
+                        rf"v_{{c,2}} = 0.083(\alpha_s d/b_o+2)\sqrt{{f'_c}} = 0.083(40 \times {d_eff:.1f}/{bo:.0f}+2)\sqrt{{{data.fc_prime}}} = {vc2:.3f}\,\text{{MPa}}"
+                    )
+                ]
+            )
+        )
+        doc.append(
+            Math(
+                data=[
+                    NoEscape(
+                        rf"v_{{c,3}} = 0.33\sqrt{{f'_c}} = 0.33\sqrt{{{data.fc_prime}}} = {vc3:.3f}\,\text{{MPa}}"
+                    )
+                ]
+            )
+        )
 
         doc.append(
             Math(
                 data=[
                     NoEscape(
-                        rf"v_c = \min(0.17(1+2/\beta)\sqrt{{f'_c}}, 0.083(\alpha_s d/b_o+2)\sqrt{{f'_c}}, 0.33\sqrt{{f'_c}}) = {vc:.3f}\,\text{{MPa}}"
+                        rf"\phi V_n = \phi v_c b_o d = 0.75 \times {vc:.3f} \times {bo:.0f} \times {d_eff:.1f} \times 10^{{-3}} = {phi_Vn:.1f}\,\text{{kN}}"
                     )
                 ]
             )
         )
-        doc.append(
-            Math(
-                data=[
-                    NoEscape(
-                        rf"\phi V_n = \phi v_c b_o d / 1000 = {phi_vc:.3f} \times {bo:.0f} \times {d_eff:.1f} / 1000 = {phi_Vn:.1f}\,\text{{kN}}"
-                    )
-                ]
-            )
-        )
+
+        # Shear demand
+        Vu = res.two_way_shear_demand  # kN
+        two_way_ratio = Vu / phi_Vn if phi_Vn > 0 else 999
+        two_way_ok = two_way_ratio <= 1.0
+
+        doc.append(bold("Punching Shear Demand (including moment transfer):"))
+        doc.append(Math(data=[NoEscape(rf"V_u = {Vu:.1f}\,\text{{kN}}")]))
 
         status = "PASS" if two_way_ok else "FAIL"
         doc.append(
             Math(
                 data=[
                     NoEscape(
-                        rf"V_u = {Vu:.1f}\,\text{{kN}}, \phi V_n = {phi_Vn:.1f}\,\text{{kN}}, DCR = {two_way_ratio:.2f} \quad \textbf{{{status}}}"
+                        rf"DCR = \frac{{V_u}}{{\phi V_n}} = \frac{{{Vu:.1f}}}{{{phi_Vn:.1f}}} = {two_way_ratio:.2f} \quad \textbf{{{status}}}"
                     )
                 ]
             )
@@ -369,87 +402,77 @@ def generate_footing_report(data, mat, geom, loads, res):
         rho_min = 0.0018
         As_min = rho_min * 1000 * data.thickness
 
-        doc.append(bold("Minimum reinforcement:"))
+        doc.append(bold("Minimum Reinforcement Ratio (ACI 318M-25 §7.6.1.1):"))
         doc.append(
             Math(
                 data=[
                     NoEscape(
-                        rf"A_{{s,min}} = 0.0018 b h = 0.0018 \times 1000 \times {data.thickness} = {As_min:.0f}\,\text{{mm}}^2/\text{{m}}"
+                        rf"A_{{s,min}} = 0.0018 \cdot b \cdot h = 0.0018 \times 1000 \times {data.thickness} = {As_min:.0f}\,\text{{mm}}^2/\text{{m}}"
                     )
                 ]
             )
         )
 
-        # Bottom X
-        M_x = res.fea_moment_x_pos
-        As_req_x = (
-            phi_v * data.fy * d_eff
-            - math.sqrt(
-                (phi_v * data.fy * d_eff) ** 2
-                - 4
-                * (phi_v * data.fy**2 / (2 * 0.85 * data.fc_prime * 1000))
-                * M_x
-                * 1e6
-            )
-        ) / (2 * phi_v * data.fy**2 / (2 * 0.85 * data.fc_prime * 1000))
-        if As_req_x < As_min:
-            As_req_x = As_min
-        bx = data.bottom_bar_size
+        phi_f = 0.90
+        fy = data.fy
+        fc = data.fc_prime
         sx = res.reinforcement.bottom_spacing_x
-        As_prov_x = aci_tool.get_bar_area(bx) * 1000 / sx
-
-        doc.append(bold("Bottom X-direction:"))
-        doc.append(Math(data=[NoEscape(rf"M_u = {M_x:.2f}\,\text{{kN-m}}")]))
-        doc.append(
-            Math(
-                data=[
-                    NoEscape(rf"A_{{s,req}} = {As_req_x:.1f}\,\text{{mm}}^2/\text{{m}}")
-                ]
-            )
-        )
-        doc.append(
-            NoEscape(rf"Provided: {bx} @ {sx:.0f} mm ($A_s$ = {As_prov_x:.1f} mm²/m)")
-        )
-
-        # Bottom Y
-        M_y = res.fea_moment_y_pos
-        As_req_y = (
-            phi_v * data.fy * d_eff
-            - math.sqrt(
-                (phi_v * data.fy * d_eff) ** 2
-                - 4
-                * (phi_v * data.fy**2 / (2 * 0.85 * data.fc_prime * 1000))
-                * M_y
-                * 1e6
-            )
-        ) / (2 * phi_v * data.fy**2 / (2 * 0.85 * data.fc_prime * 1000))
-        if As_req_y < As_min:
-            As_req_y = As_min
-        by = data.bottom_bar_size
         sy = res.reinforcement.bottom_spacing_y
-        As_prov_y = aci_tool.get_bar_area(by) * 1000 / sy
 
-        doc.append(bold("Bottom Y-direction:"))
-        doc.append(Math(data=[NoEscape(rf"M_u = {M_y:.2f}\,\text{{kN-m}}")]))
-        doc.append(
-            Math(
-                data=[
-                    NoEscape(rf"A_{{s,req}} = {As_req_y:.1f}\,\text{{mm}}^2/\text{{m}}")
-                ]
+        def flexure_calcs(title, Mu, bar_size, spacing):
+            doc.append(bold(title))
+            doc.append(Math(data=[NoEscape(rf"M_u = {Mu:.2f}\,\text{{kN-m/m}}")]))
+
+            coeff = 2 * Mu * 1e6 / (phi_f * 0.85 * fc * 1000)
+            a = d_eff - math.sqrt(max(0, d_eff**2 - coeff))
+            As_req = (0.85 * fc * 1000 * a) / fy
+            As_req = max(As_req, As_min)
+
+            doc.append(
+                Math(
+                    data=[
+                        NoEscape(
+                            rf"a = d - \sqrt{{d^2 - \frac{{2 M_u}}{{\phi 0.85 f'_c b}}}} = {d_eff:.1f} - \sqrt{{{d_eff:.1f}^2 - \frac{{2 \times {Mu:.2f} \times 10^6}}{{0.9 \times 0.85 \times {fc} \times 1000}}}} = {a:.2f}\,\text{{mm}}"
+                        )
+                    ]
+                )
             )
+            doc.append(
+                Math(
+                    data=[
+                        NoEscape(
+                            rf"A_{{s,req}} = \frac{{0.85 f'_c b a}}{{f_y}} = \frac{{0.85 \times {fc} \times 1000 \times {a:.2f}}}{{{fy}}} = {As_req:.1f}\,\text{{mm}}^2/\text{{m}}"
+                        )
+                    ]
+                )
+            )
+
+            bar_area = aci_tool.get_bar_area(bar_size)
+            As_prov = bar_area * 1000 / spacing
+            doc.append(
+                NoEscape(
+                    rf"Provided: {bar_size} @ {spacing:.0f} mm $\rightarrow A_{{s,prov}} = \frac{{{bar_area:.1f} \times 1000}}{{{spacing:.0f}}} = {As_prov:.1f}\,\text{{mm}}^2/\text{{m}}"
+                )
+            )
+            doc.append(NoEscape(r"\\"))
+            return As_prov
+
+        As_prov_x = flexure_calcs(
+            "Bottom X-direction:", res.fea_moment_x_pos, data.bottom_bar_size, sx
         )
-        doc.append(
-            NoEscape(rf"Provided: {by} @ {sy:.0f} mm ($A_s$ = {As_prov_y:.1f} mm²/m)")
+        As_prov_y = flexure_calcs(
+            "Bottom Y-direction:", res.fea_moment_y_pos, data.bottom_bar_size, sy
         )
 
         # Top reinforcement (if any)
         if res.reinforcement.top_bars_x:
-            doc.append(bold("Top reinforcement:"))
+            doc.append(bold("Top Reinforcement:"))
             doc.append(
                 NoEscape(
                     rf"Top X: {res.reinforcement.top_bars_x} @ {res.reinforcement.top_spacing_x:.0f} mm"
                 )
             )
+            doc.append(NoEscape(r"\\"))
             doc.append(
                 NoEscape(
                     rf"Top Y: {res.reinforcement.top_bars_y} @ {res.reinforcement.top_spacing_y:.0f} mm"
@@ -472,12 +495,42 @@ def generate_footing_report(data, mat, geom, loads, res):
         W_surcharge = surcharge_total * L_m * B_m
         P_total = data.pu_srv + W_footing + W_soil + W_surcharge
 
-        doc.append(bold("Total vertical load:"))
+        doc.append(bold("Resisting Loads (Service):"))
         doc.append(
             Math(
                 data=[
                     NoEscape(
-                        rf"P = P_s + W_f + W_{{soil}} + W_s = {data.pu_srv:.1f} + {W_footing:.1f} + {W_soil:.1f} + {W_surcharge:.1f} = {P_total:.1f}\,\text{{kN}}"
+                        rf"W_{{f}} = \gamma_c \cdot L \cdot B \cdot h = 24.0 \times {L_m:.2f} \times {B_m:.2f} \times {h_m:.3f} = {W_footing:.1f}\,\text{{kN}}"
+                    )
+                ]
+            )
+        )
+        if W_soil > 0:
+            doc.append(
+                Math(
+                    data=[
+                        NoEscape(
+                            rf"W_{{soil}} = \gamma_s \cdot L \cdot B \cdot D = {data.soil_unit_weight:.1f} \times {L_m:.2f} \times {B_m:.2f} \times {data.soil_depth / 1000:.3f} = {W_soil:.1f}\,\text{{kN}}"
+                        )
+                    ]
+                )
+            )
+        if W_surcharge > 0:
+            doc.append(
+                Math(
+                    data=[
+                        NoEscape(
+                            rf"W_{{s}} = w_s \cdot L \cdot B = {surcharge_total:.1f} \times {L_m:.2f} \times {B_m:.2f} = {W_surcharge:.1f}\,\text{{kN}}"
+                        )
+                    ]
+                )
+            )
+
+        doc.append(
+            Math(
+                data=[
+                    NoEscape(
+                        rf"P_{{tot}} = P_s + W_f + W_{{soil}} + W_s = {data.pu_srv:.1f} + {W_footing:.1f} + {W_soil:.1f} + {W_surcharge:.1f} = {P_total:.1f}\,\text{{kN}}"
                     )
                 ]
             )
@@ -485,16 +538,39 @@ def generate_footing_report(data, mat, geom, loads, res):
 
         # FS about X
         Mr_x = P_total * B_m / 2.0
-        Mo_x = abs(data.mux_srv) + abs(data.vx_srv) * h_m
-        fs_x = Mr_x / Mo_x
-        status_x = "PASS" if fs_x >= (1.5 if data.transient_loads else 2.0) else "FAIL"
+        # Fix the vx_srv/vy_srv bug by using 0 or loads properties
+        vx_s = loads.shear_x if hasattr(loads, "shear_x") else 0.0
+        vy_s = loads.shear_y if hasattr(loads, "shear_y") else 0.0
 
-        doc.append(bold("FS about X-axis:"))
+        Mo_x = abs(data.mux_srv) + abs(vx_s) * h_m
+        fs_x = Mr_x / Mo_x if Mo_x > 0 else 99.9
+        ot_limit = 1.5 if data.transient_loads else 2.0
+        status_x = "PASS" if fs_x >= ot_limit else "FAIL"
+
+        doc.append(bold("Stability about X-axis (Overturning about Y edge):"))
         doc.append(
             Math(
                 data=[
                     NoEscape(
-                        rf"FS_x = M_R / M_O = {Mr_x:.1f} / {Mo_x:.1f} = {fs_x:.2f} \quad \textbf{{{status_x}}}"
+                        rf"M_{{R,x}} = P_{{tot}} \cdot B/2 = {P_total:.1f} \times {B_m / 2:.2f} = {Mr_x:.1f}\,\text{{kN-m}}"
+                    )
+                ]
+            )
+        )
+        doc.append(
+            Math(
+                data=[
+                    NoEscape(
+                        rf"M_{{O,x}} = M_{{sx}} + V_{{sx}} \cdot h = {abs(data.mux_srv):.1f} + {abs(vx_s):.1f} \times {h_m:.3f} = {Mo_x:.1f}\,\text{{kN-m}}"
+                    )
+                ]
+            )
+        )
+        doc.append(
+            Math(
+                data=[
+                    NoEscape(
+                        rf"FS_x = \frac{{M_{{R,x}}}}{{M_{{O,x}}}} = \frac{{{Mr_x:.1f}}}{{{Mo_x:.1f}}} = {fs_x:.2f} \quad \textbf{{{status_x}}}"
                     )
                 ]
             )
@@ -502,16 +578,34 @@ def generate_footing_report(data, mat, geom, loads, res):
 
         # FS about Y
         Mr_y = P_total * L_m / 2.0
-        Mo_y = abs(data.muy_srv) + abs(data.vy_srv) * h_m
-        fs_y = Mr_y / Mo_y
-        status_y = "PASS" if fs_y >= (1.5 if data.transient_loads else 2.0) else "FAIL"
+        Mo_y = abs(data.muy_srv) + abs(vy_s) * h_m
+        fs_y = Mr_y / Mo_y if Mo_y > 0 else 99.9
+        status_y = "PASS" if fs_y >= ot_limit else "FAIL"
 
-        doc.append(bold("FS about Y-axis:"))
+        doc.append(bold("Stability about Y-axis (Overturning about X edge):"))
         doc.append(
             Math(
                 data=[
                     NoEscape(
-                        rf"FS_y = M_R / M_O = {Mr_y:.1f} / {Mo_y:.1f} = {fs_y:.2f} \quad \textbf{{{status_y}}}"
+                        rf"M_{{R,y}} = P_{{tot}} \cdot L/2 = {P_total:.1f} \times {L_m / 2:.2f} = {Mr_y:.1f}\,\text{{kN-m}}"
+                    )
+                ]
+            )
+        )
+        doc.append(
+            Math(
+                data=[
+                    NoEscape(
+                        rf"M_{{O,y}} = M_{{sy}} + V_{{sy}} \cdot h = {abs(data.muy_srv):.1f} + {abs(vy_s):.1f} \times {h_m:.3f} = {Mo_y:.1f}\,\text{{kN-m}}"
+                    )
+                ]
+            )
+        )
+        doc.append(
+            Math(
+                data=[
+                    NoEscape(
+                        rf"FS_y = \frac{{M_{{R,y}}}}{{M_{{O,y}}}} = \frac{{{Mr_y:.1f}}}{{{Mo_y:.1f}}} = {fs_y:.2f} \quad \textbf{{{status_y}}}"
                     )
                 ]
             )
