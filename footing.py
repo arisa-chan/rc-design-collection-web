@@ -1445,7 +1445,7 @@ def setup_footing_routes(app):
                         air.Div(
                             air.H3("Overturning Stability Check"),
                             air.Raw(
-                                f"$$FS_x = \\frac{{M_{{R,x}}}}{{M_{{O,x}}}} = \\frac{{{P_total * B_m / 2:.1f}}}{{{abs(loads.service_moment_x) + abs(loads.shear_x) * geom.thickness / 1000:.1f}}} = {res.fs_overturning_x:.2f}$$"
+                                f"$$FS_x = \\frac{{M_{{R,x}}}}{{M_{{O,x}}}} = \\frac{{{P_total * B_m / 2:.1f}}}{{{abs(data.mux_srv) + abs(res.fea_shear_x) * geom.thickness / 1000:.1f}}} = {res.fs_overturning_x:.2f}$$"
                             ),
                             air.Ul(
                                 air.Li(
