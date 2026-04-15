@@ -525,61 +525,76 @@ class ACI318M25FootingDesign:
         geom: FootingGeometry,
         loads: FootingLoads,
         mat: MaterialProperties,
-        d_eff: float = None,
+        d_eff: float
     ) -> Tuple[bool, float, float, float]:
-        """Two-way (punching) shear check with eccentric moment transfer per ACI 318M-25 §22.6.5."""
+        """Two-way shear check with edge detection, eccentricity, and ACI 318-19 size effect factor."""
         fc_prime = mat.fc_prime
-        d = d_eff if d_eff is not None else geom.thickness - geom.cover - 20
-
-        c1 = geom.column_width  # column dimension in x
-        c2 = geom.column_depth  # column dimension in y
-        b1 = c1 + d  # critical section in x
-        b2 = c2 + d  # critical section in y
-        bo = 2 * b1 + 2 * b2
+        d = d_eff
+        
+        c1 = geom.column_width
+        c2 = geom.column_depth
+        cx = geom.ecc_x
+        cy = geom.ecc_y
+        
+        # Check boundary proximity (Critical section is d/2 from face)
+        left_edge = cx - c1/2 - d/2 <= -geom.length/2
+        right_edge = cx + c1/2 + d/2 >= geom.length/2
+        bot_edge = cy - c2/2 - d/2 <= -geom.width/2
+        top_edge = cy + c2/2 + d/2 >= geom.width/2
+        
+        edges_crossed = sum([left_edge, right_edge, bot_edge, top_edge])
+        
+        # Adjust bo and alphas based on condition
+        if edges_crossed == 0:
+            alphas = 40  # Interior
+            b1, b2 = c1 + d, c2 + d
+            bo = 2 * b1 + 2 * b2
+        elif edges_crossed == 1:
+            alphas = 30  # Edge
+            if left_edge or right_edge:
+                b1, b2 = c1 + d/2, c2 + d
+                bo = 2 * b1 + b2
+            else:
+                b1, b2 = c1 + d, c2 + d/2
+                bo = b1 + 2 * b2
+        else:
+            alphas = 20  # Corner
+            b1, b2 = c1 + d/2, c2 + d/2
+            bo = b1 + b2
 
         # Concentric shear demand
         bearing_area = geom.length * geom.width / 1e6
         qu = loads.axial_force / bearing_area
-        critical_area = b1 * b2 / 1e6
-        Vu = loads.axial_force - qu * critical_area
+        critical_area = (b1 * b2) / 1e6
+        Vu = loads.axial_force - (qu * critical_area)
+        vu_concentric = Vu * 1000.0 / (bo * d) if (bo * d) > 0 else 0.0
 
-        # Concentric shear stress
-        vu_concentric = Vu * 1000.0 / (bo * d) if (bo * d) > 0 else 0.0  # MPa
+        # Simplified eccentric moment transfer
+        gamma_vx = 1.0 - (1.0 / (1.0 + (2.0 / 3.0) * math.sqrt(b1 / b2)) if b2 > 0 else 0.5)
+        gamma_vy = 1.0 - (1.0 / (1.0 + (2.0 / 3.0) * math.sqrt(b2 / b1)) if b1 > 0 else 0.5)
 
-        # Eccentric moment transfer (ACI §8.4.4.2)
-        # gamma_f = fraction transferred by flexure; gamma_v = 1 - gamma_f by eccentricity of shear
-        gamma_fx = 1.0 / (1.0 + (2.0 / 3.0) * math.sqrt(b1 / b2)) if b2 > 0 else 0.5
-        gamma_vx = 1.0 - gamma_fx
-        gamma_fy = 1.0 / (1.0 + (2.0 / 3.0) * math.sqrt(b2 / b1)) if b1 > 0 else 0.5
-        gamma_vy = 1.0 - gamma_fy
-
-        # Polar moment property Jc for each moment direction (interior column)
         Jc_x = (d * b2**3 / 6.0) + (b2 * d**3 / 6.0) + (d * b1 * b2**2 / 2.0)
-        c_AB_x = b2 / 2.0
         Jc_y = (d * b1**3 / 6.0) + (b1 * d**3 / 6.0) + (d * b2 * b1**2 / 2.0)
-        c_AB_y = b1 / 2.0
+        
+        vu_Mx = gamma_vx * abs(loads.moment_x) * 1e6 * (b2/2.0) / Jc_x if Jc_x > 0 else 0.0
+        vu_My = gamma_vy * abs(loads.moment_y) * 1e6 * (b1/2.0) / Jc_y if Jc_y > 0 else 0.0
+        vu_max = vu_concentric + vu_Mx + vu_My
 
-        Mux = abs(loads.moment_x)  # kN-m
-        Muy = abs(loads.moment_y)  # kN-m
-        vu_Mx = gamma_vx * Mux * 1e6 * c_AB_x / Jc_x if Jc_x > 0 else 0.0  # MPa
-        vu_My = gamma_vy * Muy * 1e6 * c_AB_y / Jc_y if Jc_y > 0 else 0.0  # MPa
+        # ACI 318-19 Size Effect Factor for Two-Way Shear
+        lambda_s = min(1.0, math.sqrt(2.0 / (1.0 + 0.004 * d)))
 
-        vu_max = vu_concentric + vu_Mx + vu_My  # MPa
-
-        # Concrete shear strength (ACI Table 22.6.5.2)
         beta = max(c1, c2) / min(c1, c2)
-        alphas = 40  # interior column
-        vc1 = 0.17 * (1 + 2 / beta) * math.sqrt(fc_prime)
-        vc2 = 0.083 * (alphas * d / bo + 2) * math.sqrt(fc_prime)
-        vc3 = 0.33 * math.sqrt(fc_prime)
+        vc1 = 0.17 * lambda_s * (1 + 2 / beta) * math.sqrt(fc_prime)
+        vc2 = 0.083 * lambda_s * (alphas * d / bo + 2) * math.sqrt(fc_prime)
+        vc3 = 0.33 * lambda_s * math.sqrt(fc_prime)
+        
         vc = min(vc1, vc2, vc3)
+        phi_vc = self.phi_factors["shear"] * vc
+        phi_Vn = phi_vc * bo * d / 1000.0
 
-        phi_vc = self.phi_factors["shear"] * vc  # MPa
-        phi_Vn = phi_vc * bo * d / 1000.0  # kN (equivalent concentric capacity)
-
-        # Equivalent demand and ratio (stress-based including eccentricity)
-        Vu_equiv = vu_max * bo * d / 1000.0  # kN
+        Vu_equiv = vu_max * bo * d / 1000.0
         ratio = vu_max / phi_vc if phi_vc > 0 else 99.9
+        
         return ratio <= 1.0, ratio, Vu_equiv, phi_Vn
 
     def _generate_detailed_calcs(
@@ -1007,114 +1022,80 @@ class ACI318M25FootingDesign:
         V_x = np.max(np.abs(ult_data["VX"]))
         V_y = np.max(np.abs(ult_data["VY"]))
 
-        # Flexure Design
+        # Flexure Design with precise effective depths
         db_bot = self.aci.get_bar_diameter(preferred_bottom_bar)
         db_top_val = self.aci.get_bar_diameter(preferred_top_bar)
-        # Effective depth uses half bar diameter per ACI 318M‑25 §5.7.2.1
-        d_eff = (
-            geom.thickness - geom.cover - db_bot / 2.0
-        )  # average d for two orthogonal layers (bottom)
-        d_eff_top = geom.thickness - geom.cover - db_top_val / 2.0
+        
+        # Exact effective depths for stacked layers (assuming X is the outer bottom layer)
+        d_x = geom.thickness - geom.cover - (db_bot / 2.0)
+        d_y = geom.thickness - geom.cover - db_bot - (db_bot / 2.0)
+        d_eff_avg = (d_x + d_y) / 2.0 # Used for two-way shear
+        d_eff_top = geom.thickness - geom.cover - (db_top_val / 2.0)
+        
         rho_min = 0.0018
         As_min = rho_min * 1000 * geom.thickness
 
-        def req_as(M):
+        def req_as(M, d_val):
             if M <= 0:
                 return As_min
-            A = (
-                self.phi_factors["flexure"]
-                * mat.fy**2
-                / (2 * 0.85 * mat.fc_prime * 1000)
-            )
-            B = -self.phi_factors["flexure"] * mat.fy * d_eff
+            A = (self.phi_factors["flexure"] * mat.fy**2) / (2 * 0.85 * mat.fc_prime * 1000)
+            B = -self.phi_factors["flexure"] * mat.fy * d_val
             C = M * 1e6
             disc = B**2 - 4 * A * C
             if disc < 0:
                 return As_min * 2
             return max((-B - math.sqrt(disc)) / (2 * A), As_min)
 
-        # Required steel areas for bottom reinforcement (positive moments)
-        As_req_x = req_as(max(M_x_pos, 0))
-        As_req_y = req_as(max(M_y_pos, 0))
+        # Required steel areas for bottom reinforcement
+        As_req_x = req_as(max(M_x_pos, 0), d_x)
+        As_req_y = req_as(max(M_y_pos, 0), d_y)
 
-        # Bottom reinforcement (positive moments)
-        bx, sx = self._select_rebar(
-            As_req_x, 1000, geom.thickness, preferred_bottom_bar
-        )
-        by, sy = self._select_rebar(
-            As_req_y, 1000, geom.thickness, preferred_bottom_bar
-        )
-        # Determine if top reinforcement is needed from Wood‑Armer hogging moments
-        _eps = 1e-3
-        has_bend = (M_x_neg > _eps) or (M_y_neg > _eps)
+        bx, sx = self._select_rebar(As_req_x, 1000, geom.thickness, preferred_bottom_bar)
+        by, sy = self._select_rebar(As_req_y, 1000, geom.thickness, preferred_bottom_bar)
+        
+        As_prov_x = self.aci.get_bar_area(bx) * 1000 / sx
+        As_prov_y = self.aci.get_bar_area(by) * 1000 / sy
 
         # Top reinforcement (negative moments)
-        def req_as_top(M):
-            if M <= 0:
-                return As_min
-            A = (
-                self.phi_factors["flexure"]
-                * mat.fy**2
-                / (2 * 0.85 * mat.fc_prime * 1000)
-            )
-            B = -self.phi_factors["flexure"] * mat.fy * d_eff_top
-            C = M * 1e6
-            disc = B**2 - 4 * A * C
-            if disc < 0:
-                return As_min * 2
-            return max((-B - math.sqrt(disc)) / (2 * A), As_min)
-
+        _eps = 1e-3
+        has_bend = (M_x_neg > _eps) or (M_y_neg > _eps)
         if has_bend:
-            As_req_xtop = req_as_top(max(M_x_neg, 0))
-            As_req_ytop = req_as_top(max(M_y_neg, 0))
-            tx, stx = self._select_rebar(
-                As_req_xtop, 1000, geom.thickness, preferred_top_bar
-            )
-            ty, sty = self._select_rebar(
-                As_req_ytop, 1000, geom.thickness, preferred_top_bar
-            )
+            As_req_xtop = req_as(max(M_x_neg, 0), d_eff_top)
+            As_req_ytop = req_as(max(M_y_neg, 0), d_eff_top)
+            tx, stx = self._select_rebar(As_req_xtop, 1000, geom.thickness, preferred_top_bar)
+            ty, sty = self._select_rebar(As_req_ytop, 1000, geom.thickness, preferred_top_bar)
         else:
             As_req_xtop = As_req_ytop = 0.0
-            tx, stx = "", 0.0
-            ty, sty = "", 0.0
-
-        # Over‑reinforcement check (ρ ≤ 0.04) – bottom & top
-        rho_bottom_x = As_req_x / (1000 * d_eff)
-        rho_bottom_y = As_req_y / (1000 * d_eff)
-        rho_top_x = As_req_xtop / (1000 * d_eff_top) if As_req_xtop > 0 else 0.0
-        rho_top_y = As_req_ytop / (1000 * d_eff_top) if As_req_ytop > 0 else 0.0
-        max_rho = max(rho_bottom_x, rho_bottom_y, rho_top_x, rho_top_y)
-        over_reinf_ok = max_rho <= 0.04
-        if not over_reinf_ok:
-            notes.append(
-                f"⚠️ Over‑reinforcement: ρ = {max_rho:.3f} exceeds 0.04. Consider larger spacing or smaller bar size."
-            )
+            tx, stx, ty, sty = "", 0.0, "", 0.0
 
         # ── Shear Checks ──
-        if d_eff < 100.0:
-            notes.append(
-                f"⚠️ Effective depth d = {d_eff:.0f} mm is very small. Consider increasing footing thickness."
-            )
-            # Do NOT clamp d_eff; keep the actual (small) value for design calculations.
-        d_eff_design = d_eff  # save for detailed calcs before contour-plot reset
-        L_m = geom.length / 1000.0
-        B_m = geom.width / 1000.0
-        d_m = d_eff / 1000.0
-        col_w_m = geom.column_width / 1000.0
-        col_d_m = geom.column_depth / 1000.0
+        if d_x < 100.0 or d_y < 100.0:
+            notes.append(f"⚠️ Effective depth d is very small. Consider increasing footing thickness.")
 
-        # One-way shear: use actual FEA soil pressure at critical section
-        # Critical section is at distance d from column face in each direction
-        # Find the node indices closest to the critical sections
-        crit_x_left = -col_w_m / 2 - d_m
-        crit_x_right = col_w_m / 2 + d_m
-        crit_y_bot = -col_d_m / 2 - d_m
-        crit_y_top = col_d_m / 2 + d_m
+        # One-way shear: ACI 318-19+ Size Effect Factor & Rho_w
+        # lambda_s = sqrt(2 / (1 + 0.004*d)) <= 1.0
+        lambda_s_x = min(1.0, math.sqrt(2.0 / (1.0 + 0.004 * d_x)))
+        lambda_s_y = min(1.0, math.sqrt(2.0 / (1.0 + 0.004 * d_y)))
+        
+        rho_w_x = As_prov_x / (1000 * d_x)
+        rho_w_y = As_prov_y / (1000 * d_y)
 
-        ix_crit_left = _find_nearest(x_nodes, crit_x_left)
-        ix_crit_right = _find_nearest(x_nodes, crit_x_right)
-        iy_crit_bot = _find_nearest(y_nodes, crit_y_bot)
-        iy_crit_top = _find_nearest(y_nodes, crit_y_top)
+        phi_v = self.phi_factors["shear"]
+        # Vc = 0.66 * lambda_s * lambda * (rho_w)^(1/3) * sqrt(f'c) * b_w * d
+        vc_ow_x = 0.66 * lambda_s_x * 1.0 * (rho_w_x**(1/3)) * math.sqrt(mat.fc_prime)
+        vc_ow_y = 0.66 * lambda_s_y * 1.0 * (rho_w_y**(1/3)) * math.sqrt(mat.fc_prime)
+        
+        phiVc_x = phi_v * vc_ow_x * 1000 * (d_x / 1000.0)  # kN/m
+        phiVc_y = phi_v * vc_ow_y * 1000 * (d_y / 1000.0)  # kN/m
+
+        # Use d_x and d_y to find critical sections instead of average d
+        L_m, B_m = geom.length / 1000.0, geom.width / 1000.0
+        col_w_m, col_d_m = geom.column_width / 1000.0, geom.column_depth / 1000.0
+        
+        ix_crit_left = _find_nearest(x_nodes, -col_w_m / 2 - (d_x / 1000.0))
+        ix_crit_right = _find_nearest(x_nodes, col_w_m / 2 + (d_x / 1000.0))
+        iy_crit_bot = _find_nearest(y_nodes, -col_d_m / 2 - (d_y / 1000.0))
+        iy_crit_top = _find_nearest(y_nodes, col_d_m / 2 + (d_y / 1000.0))
 
         # One-way shear at critical sections (distance d from column face)
         # Compute shear from nearest edge only (not the max of both directions)
@@ -1189,35 +1170,26 @@ class ACI318M25FootingDesign:
             )
 
         # ── Overturning Check ──
+        # ── Overturning Check ──
         W_footing = 24.0 * L_m * B_m * (geom.thickness / 1000.0)
-        W_soil = (
-            soil.unit_weight * L_m * B_m * (soil.soil_depth / 1000.0)
-            if soil.soil_depth > 0
-            else 0.0
-        )
-        W_surcharge = surcharge_total * L_m * B_m  # kPa * m² = kN
-        P_total = loads.service_axial + W_footing + W_soil + W_surcharge
+        W_soil = soil.unit_weight * L_m * B_m * (soil.soil_depth / 1000.0) if soil.soil_depth > 0 else 0.0
+        W_surcharge = surcharge_total * L_m * B_m
+        
+        # Dead loads from footing/soil always act at the center
+        W_dead_total = W_footing + W_soil + W_surcharge
+        
+        overturning_moment_x = abs(loads.service_moment_x) + abs(loads.shear_x) * (geom.thickness / 1000.0)
+        overturning_moment_y = abs(loads.service_moment_y) + abs(loads.shear_y) * (geom.thickness / 1000.0)
 
-        overturning_moment_x = abs(loads.service_moment_x) + abs(loads.shear_x) * (
-            geom.thickness / 1000.0
-        )
-        overturning_moment_y = abs(loads.service_moment_y) + abs(loads.shear_y) * (
-            geom.thickness / 1000.0
-        )
+        ecc_x_m = geom.ecc_x / 1000.0
+        ecc_y_m = geom.ecc_y / 1000.0
 
-        resisting_moment_x = P_total * B_m / 2.0
-        resisting_moment_y = P_total * L_m / 2.0
+        # Resisting moments accounting for column eccentricity pushing the resultant closer to an edge
+        resisting_moment_x = W_dead_total * (B_m / 2.0) + loads.service_axial * (B_m / 2.0 - abs(ecc_y_m))
+        resisting_moment_y = W_dead_total * (L_m / 2.0) + loads.service_axial * (L_m / 2.0 - abs(ecc_x_m))
 
-        fs_ot_x = (
-            resisting_moment_x / overturning_moment_x
-            if overturning_moment_x > 0
-            else 99.9
-        )
-        fs_ot_y = (
-            resisting_moment_y / overturning_moment_y
-            if overturning_moment_y > 0
-            else 99.9
-        )
+        fs_ot_x = resisting_moment_x / overturning_moment_x if overturning_moment_x > 0 else 99.9
+        fs_ot_y = resisting_moment_y / overturning_moment_y if overturning_moment_y > 0 else 99.9
 
         ot_limit = 1.5 if is_transient else 2.0
         overturning_ok = (fs_ot_x >= ot_limit) and (fs_ot_y >= ot_limit)

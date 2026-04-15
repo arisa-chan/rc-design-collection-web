@@ -451,7 +451,7 @@ def generate_footing_report(data, mat, geom, loads, res):
             As_prov = bar_area * 1000 / spacing
             doc.append(
                 NoEscape(
-                    rf"Provided: {bar_size} @ {spacing:.0f} mm $\rightarrow A_{{s,prov}} = \frac{{{bar_area:.1f} \times 1000}}{{{spacing:.0f}}} = {As_prov:.1f}\,\text{{mm}}^2/\text{{m}}"
+                    rf"Provided: {bar_size} @ {spacing:.0f} mm $\rightarrow A_{{s,prov}} = \frac{{{bar_area:.1f} \times 1000}}{{{spacing:.0f}}} = {As_prov:.1f}\,\text{{mm}}^2/\text{{m}}$"
                 )
             )
             doc.append(NoEscape(r"\\"))
@@ -655,12 +655,18 @@ def generate_footing_report(data, mat, geom, loads, res):
             with doc.create(Itemize()) as itemize:
                 for note in list(dict.fromkeys(res.design_notes)):
                     # Fix unicode for LaTeX
+                    # Fix unicode for LaTeX
                     safe_note = (
                         note.replace("λ", r"$\lambda$")
                         .replace("φ", r"$\phi$")
                         .replace("≥", r"$\geq$")
                         .replace("≤", r"$\leq$")
                         .replace("√", r"$\sqrt{}$")
+                        .replace("⚠️", "")
+                        .replace("⚠", "")
+                        .replace("\ufe0f", "")
+                        .replace("ℹ️", "")
+                        .replace("ℹ", "")
                     )
                     itemize.add_item(NoEscape(safe_note))
 

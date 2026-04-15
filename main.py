@@ -44,7 +44,7 @@ def index(request: air.Request):
                     ),
                     air.Div(
                         air.H3("RC Isolated Footing Designer"),
-                        air.P("v0.8 beta.", style="color: var(--text-muted); margin-bottom: 20px;"),
+                        air.P("v0.8.1 beta.", style="color: var(--text-muted); margin-bottom: 20px;"),
                         air.A("Launch", href="/footing", class_="button"),
                         class_="module-card"
                     ),
