@@ -116,6 +116,7 @@ class JointBeamElement:
     d: float
     as_top: float
     as_bot: float
+    offset: float = 0.0  # eccentricity of beam centreline from column centreline (mm)
 
 
 @dataclass
@@ -192,8 +193,7 @@ class ACI318M25ColumnDesign:
             layout.extend([(x_max, y_max, area), (-x_max, y_max, area), (-x_max, -y_max, area), (x_max, -y_max, area)])
             if N > 4:
                 rem = N - 4
-                ratio = geometry.width / (geometry.width + geometry.depth) if (
-                                                                                          geometry.width + geometry.depth) > 0 else 0.5
+                ratio = geometry.width / (geometry.width + geometry.depth) if (geometry.width + geometry.depth) > 0 else 0.5
                 nx_inter = 2 * int(round(rem * ratio / 2.0))
                 ny_inter = rem - nx_inter
                 nx_face, ny_face = nx_inter // 2, ny_inter // 2
@@ -286,14 +286,18 @@ class ACI318M25ColumnDesign:
         P_target = abs(axial_load)
 
         hx, hy = geometry.width, geometry.depth
-        if bending_axis == 'x':
+        is_circular = geometry.shape == ColumnShape.CIRCULAR
+        if is_circular:
+            h = b = geometry.width
+            bending_axis = 'x'
+        elif bending_axis == 'x':
             h, b = hy, hx
         else:
             h, b = hx, hy
 
         beta1 = 0.85 if fc_prime <= 28 else max(0.65, 0.85 - 0.05 * (fc_prime - 28) / 7.0)
         steel_area = sum(a for _, _, a in bar_layout)
-        Ag = hx * hy
+        Ag = geometry.width * geometry.depth if not is_circular else math.pi * (geometry.width / 2) ** 2
         Po = 0.85 * fc_prime * (Ag - steel_area) + fy * steel_area
         if P_target > Po / 1000.0: return 0.001
 
@@ -303,9 +307,16 @@ class ACI318M25ColumnDesign:
             Pn, Mn = 0.0, 0.0
             a = min(beta1 * c, h)
             if a > 0:
-                Cc = (0.85 * fc_prime * a * b) / 1000.0
+                if not is_circular:
+                    Cc = (0.85 * fc_prime * a * b) / 1000.0
+                    y_c = (h / 2.0 - a / 2.0)
+                else:
+                    theta = 2 * math.acos(max(-1.0, min(1.0, 1.0 - 2 * a / h)))
+                    area_c = (h / 2.0) ** 2 / 2.0 * (theta - math.sin(theta))
+                    Cc = (0.85 * fc_prime * area_c) / 1000.0
+                    y_c = (2 * (h / 2.0) * math.sin(theta / 2) ** 3) / (3 * (theta - math.sin(theta))) if theta > 0 else 0
                 Pn += Cc;
-                Mn += Cc * ((h / 2.0 - a / 2.0) / 1000.0)
+                Mn += Cc * (y_c / 1000.0)
 
             for x_bar, y_bar, a_bar in bar_layout:
                 d_i = h / 2.0 - y_bar if bending_axis == 'x' else h / 2.0 - x_bar
@@ -349,94 +360,135 @@ class ACI318M25ColumnDesign:
         tie_size = pref_tie
         tie_diameter = self.aci.get_bar_diameter(tie_size)
 
-        num_bars = len(longitudinal_bars)
-        rem = num_bars - 4
-        ratio = geometry.width / (geometry.width + geometry.depth) if (geometry.width + geometry.depth) > 0 else 0.5
-        nx_inter = 2 * int(round(rem * ratio / 2.0))
-        ny_inter = rem - nx_inter
-
-        nx = (nx_inter // 2) + 2
-        ny = (ny_inter // 2) + 2
-
-        tie_legs_y = 2
-        if nx > 2:
-            clear_x = (geometry.width - 2 * geometry.cover - 2 * tie_diameter - long_bar_diameter) / (
-                        nx - 1) - long_bar_diameter
-            tie_legs_y = nx if clear_x > 150.0 else math.ceil(nx / 2.0) + (1 if nx % 2 == 0 else 0)
-
-        tie_legs_x = 2
-        if ny > 2:
-            clear_y = (geometry.depth - 2 * geometry.cover - 2 * tie_diameter - long_bar_diameter) / (
-                        ny - 1) - long_bar_diameter
-            tie_legs_x = ny if clear_y > 150.0 else math.ceil(ny / 2.0) + (1 if ny % 2 == 0 else 0)
-
-        tie_legs_x = min(tie_legs_x, ny)
-        tie_legs_y = min(tie_legs_y, nx)
-
-        if geometry.frame_system == FrameSystem.SPECIAL:
-            min_col_dim = min(geometry.width, geometry.depth)
-            hx_approx = min_col_dim / min(tie_legs_x, tie_legs_y)
-            sx = max(100.0, min(100.0 + (350.0 - hx_approx) / 3.0, 150.0))
-            s_max_geom = min(min_col_dim / 4.0, 6.0 * long_bar_diameter, sx)
-
-            fc_prime, fyt = material_props.fc_prime, material_props.fyt
-            bc_x = geometry.depth - 2 * geometry.cover
-            bc_y = geometry.width - 2 * geometry.cover
-            Ach = bc_x * bc_y
-            Ag = geometry.width * geometry.depth
-
-            ash_s_req_x = max(0.3 * (bc_x * fc_prime / fyt) * (Ag / Ach - 1.0), 0.09 * bc_x * fc_prime / fyt)
-            ash_s_req_y = max(0.3 * (bc_y * fc_prime / fyt) * (Ag / Ach - 1.0), 0.09 * bc_y * fc_prime / fyt)
-
-            found = False
-            for t_size in ['D10', 'D12', 'D16']:
-                if self.aci.get_bar_area(t_size) < self.aci.get_bar_area(pref_tie): continue
-                A_tie = self.aci.get_bar_area(t_size)
-
-                for lx in range(tie_legs_x, ny + 1):
-                    for ly in range(tie_legs_y, nx + 1):
-                        s_req_x = (lx * A_tie) / ash_s_req_x if ash_s_req_x > 0 else float('inf')
-                        s_req_y = (ly * A_tie) / ash_s_req_y if ash_s_req_y > 0 else float('inf')
-
-                        s_allowed = min(s_max_geom, s_req_x, s_req_y)
-                        if s_allowed >= 75.0:
-                            tie_size = t_size
-                            tie_legs_x = lx
-                            tie_legs_y = ly
-                            spacing_confinement = s_allowed
-                            found = True
-                            break
-                    if found: break
-                if found: break
-
-            if not found:
-                tie_size = 'D16'
-                tie_legs_x = ny
-                tie_legs_y = nx
-                A_tie = self.aci.get_bar_area(tie_size)
-                s_req_x = (tie_legs_x * A_tie) / ash_s_req_x if ash_s_req_x > 0 else float('inf')
-                s_req_y = (tie_legs_y * A_tie) / ash_s_req_y if ash_s_req_y > 0 else float('inf')
-                spacing_confinement = min(s_max_geom, s_req_x, s_req_y)
+        if geometry.shape == ColumnShape.CIRCULAR:
+            tie_legs_x = 2
+            tie_legs_y = 2
+            if geometry.frame_system == FrameSystem.SPECIAL:
+                s_max_geom = min(geometry.width / 4.0, 6.0 * long_bar_diameter, 150.0)
+                fc_prime, fyt = material_props.fc_prime, material_props.fyt
+                bc = geometry.width - 2 * geometry.cover
+                Ach = math.pi * (bc / 2.0) ** 2
+                Ag = math.pi * (geometry.width / 2.0) ** 2
+                
+                ash_s_req = max(0.12 * fc_prime / fyt * Ach, 0.3 * (Ag / Ach - 1.0) * fc_prime / fyt * Ach) if geometry.column_type == ColumnType.SPIRAL else max(0.3 * (bc * fc_prime / fyt) * (Ag / Ach - 1.0), 0.09 * bc * fc_prime / fyt)
+                
+                found = False
+                for t_size in ['D10', 'D12', 'D16']:
+                    if self.aci.get_bar_area(t_size) < self.aci.get_bar_area(pref_tie): continue
+                    A_tie = self.aci.get_bar_area(t_size)
+                    s_req = (2 * A_tie) / ash_s_req if ash_s_req > 0 else float('inf')
+                    if s_req >= 75.0 or (geometry.column_type == ColumnType.SPIRAL and s_req >= 25.0):
+                        tie_size = t_size
+                        spacing_confinement = min(s_max_geom, s_req)
+                        if geometry.column_type == ColumnType.SPIRAL:
+                            spacing_confinement = min(spacing_confinement, 75.0)
+                        found = True
+                        break
+                if not found:
+                    tie_size = 'D16'
+                    A_tie = self.aci.get_bar_area(tie_size)
+                    spacing_confinement = min(s_max_geom, (2 * A_tie) / ash_s_req if ash_s_req > 0 else float('inf'))
+            else:
+                spacing_confinement = min(16 * long_bar_diameter, 48 * tie_diameter, geometry.width)
+                if geometry.column_type == ColumnType.SPIRAL:
+                    spacing_confinement = min(spacing_confinement, 75.0)
         else:
-            spacing_confinement = min(16 * long_bar_diameter, 48 * tie_diameter, min(geometry.width, geometry.depth))
+            num_bars = len(longitudinal_bars)
+            rem = num_bars - 4
+            ratio = geometry.width / (geometry.width + geometry.depth) if (geometry.width + geometry.depth) > 0 else 0.5
+            nx_inter = 2 * int(round(rem * ratio / 2.0))
+            ny_inter = rem - nx_inter
+
+            nx = (nx_inter // 2) + 2
+            ny = (ny_inter // 2) + 2
+
+            tie_legs_y = 2
+            if nx > 2:
+                clear_x = (geometry.width - 2 * geometry.cover - 2 * tie_diameter - long_bar_diameter) / (
+                            nx - 1) - long_bar_diameter
+                tie_legs_y = nx if clear_x > 150.0 else math.ceil(nx / 2.0) + (1 if nx % 2 == 0 else 0)
+
+            tie_legs_x = 2
+            if ny > 2:
+                clear_y = (geometry.depth - 2 * geometry.cover - 2 * tie_diameter - long_bar_diameter) / (
+                            ny - 1) - long_bar_diameter
+                tie_legs_x = ny if clear_y > 150.0 else math.ceil(ny / 2.0) + (1 if ny % 2 == 0 else 0)
+
+            tie_legs_x = min(tie_legs_x, ny)
+            tie_legs_y = min(tie_legs_y, nx)
+
+            if geometry.frame_system == FrameSystem.SPECIAL:
+                min_col_dim = min(geometry.width, geometry.depth)
+                hx_approx = min_col_dim / min(tie_legs_x, tie_legs_y)
+                sx = max(100.0, min(100.0 + (350.0 - hx_approx) / 3.0, 150.0))
+                s_max_geom = min(min_col_dim / 4.0, 6.0 * long_bar_diameter, sx)
+
+                fc_prime, fyt = material_props.fc_prime, material_props.fyt
+                bc_x = geometry.depth - 2 * geometry.cover
+                bc_y = geometry.width - 2 * geometry.cover
+                Ach = bc_x * bc_y
+                Ag = geometry.width * geometry.depth
+
+                ash_s_req_x = max(0.3 * (bc_x * fc_prime / fyt) * (Ag / Ach - 1.0), 0.09 * bc_x * fc_prime / fyt)
+                ash_s_req_y = max(0.3 * (bc_y * fc_prime / fyt) * (Ag / Ach - 1.0), 0.09 * bc_y * fc_prime / fyt)
+
+                found = False
+                for t_size in ['D10', 'D12', 'D16']:
+                    if self.aci.get_bar_area(t_size) < self.aci.get_bar_area(pref_tie): continue
+                    A_tie = self.aci.get_bar_area(t_size)
+
+                    for lx in range(tie_legs_x, ny + 1):
+                        for ly in range(tie_legs_y, nx + 1):
+                            s_req_x = (lx * A_tie) / ash_s_req_x if ash_s_req_x > 0 else float('inf')
+                            s_req_y = (ly * A_tie) / ash_s_req_y if ash_s_req_y > 0 else float('inf')
+
+                            s_allowed = min(s_max_geom, s_req_x, s_req_y)
+                            if s_allowed >= 75.0:
+                                tie_size = t_size
+                                tie_legs_x = lx
+                                tie_legs_y = ly
+                                spacing_confinement = s_allowed
+                                found = True
+                                break
+                        if found: break
+                    if found: break
+
+                if not found:
+                    tie_size = 'D16'
+                    tie_legs_x = ny
+                    tie_legs_y = nx
+                    A_tie = self.aci.get_bar_area(tie_size)
+                    s_req_x = (tie_legs_x * A_tie) / ash_s_req_x if ash_s_req_x > 0 else float('inf')
+                    s_req_y = (tie_legs_y * A_tie) / ash_s_req_y if ash_s_req_y > 0 else float('inf')
+                    spacing_confinement = min(s_max_geom, s_req_x, s_req_y)
+            else:
+                spacing_confinement = min(16 * long_bar_diameter, 48 * tie_diameter, min(geometry.width, geometry.depth))
 
         phi_v = self.phi_factors['shear']
         dx = geometry.width - geometry.cover - tie_diameter - (long_bar_diameter / 2)
         dy = geometry.depth - geometry.cover - tie_diameter - (long_bar_diameter / 2)
 
-        Vc_x = 0.17 * math.sqrt(material_props.fc_prime) * geometry.depth * dx
-        Vs_req_x = max(0.0, (abs(loads.shear_x) * 1000 / phi_v) - Vc_x)
-        s_shear_x = (tie_legs_x * self.aci.get_bar_area(
-            tie_size) * material_props.fyt * dx) / Vs_req_x if Vs_req_x > 0 else float('inf')
-        max_s_shear_x = dx / 4.0 if Vs_req_x > 0.33 * math.sqrt(
-            material_props.fc_prime) * geometry.depth * dx else dx / 2.0
+        if geometry.shape == ColumnShape.CIRCULAR:
+            Ag = math.pi * (geometry.width / 2.0)**2
+            Vc_x = 0.17 * math.sqrt(material_props.fc_prime) * (0.8 * Ag)
+            Vc_y = Vc_x
+            Vs_req_x = max(0.0, (abs(loads.shear_x) * 1000 / phi_v) - Vc_x)
+            s_shear_x = ((math.pi / 2) * tie_legs_x * self.aci.get_bar_area(tie_size) * material_props.fyt * (0.8 * geometry.width)) / Vs_req_x if Vs_req_x > 0 else float('inf')
+            max_s_shear_x = (0.8 * geometry.width) / 4.0 if Vs_req_x > 0.33 * math.sqrt(material_props.fc_prime) * (0.8 * Ag) else (0.8 * geometry.width) / 2.0
+            
+            Vs_req_y = max(0.0, (abs(loads.shear_y) * 1000 / phi_v) - Vc_y)
+            s_shear_y = ((math.pi / 2) * tie_legs_y * self.aci.get_bar_area(tie_size) * material_props.fyt * (0.8 * geometry.width)) / Vs_req_y if Vs_req_y > 0 else float('inf')
+            max_s_shear_y = (0.8 * geometry.width) / 4.0 if Vs_req_y > 0.33 * math.sqrt(material_props.fc_prime) * (0.8 * Ag) else (0.8 * geometry.width) / 2.0
+        else:
+            Vc_x = 0.17 * math.sqrt(material_props.fc_prime) * geometry.depth * dx
+            Vs_req_x = max(0.0, (abs(loads.shear_x) * 1000 / phi_v) - Vc_x)
+            s_shear_x = (tie_legs_x * self.aci.get_bar_area(tie_size) * material_props.fyt * dx) / Vs_req_x if Vs_req_x > 0 else float('inf')
+            max_s_shear_x = dx / 4.0 if Vs_req_x > 0.33 * math.sqrt(material_props.fc_prime) * geometry.depth * dx else dx / 2.0
 
-        Vc_y = 0.17 * math.sqrt(material_props.fc_prime) * geometry.width * dy
-        Vs_req_y = max(0.0, (abs(loads.shear_y) * 1000 / phi_v) - Vc_y)
-        s_shear_y = (tie_legs_y * self.aci.get_bar_area(
-            tie_size) * material_props.fyt * dy) / Vs_req_y if Vs_req_y > 0 else float('inf')
-        max_s_shear_y = dy / 4.0 if Vs_req_y > 0.33 * math.sqrt(
-            material_props.fc_prime) * geometry.width * dy else dy / 2.0
+            Vc_y = 0.17 * math.sqrt(material_props.fc_prime) * geometry.width * dy
+            Vs_req_y = max(0.0, (abs(loads.shear_y) * 1000 / phi_v) - Vc_y)
+            s_shear_y = (tie_legs_y * self.aci.get_bar_area(tie_size) * material_props.fyt * dy) / Vs_req_y if Vs_req_y > 0 else float('inf')
+            max_s_shear_y = dy / 4.0 if Vs_req_y > 0.33 * math.sqrt(material_props.fc_prime) * geometry.width * dy else dy / 2.0
 
         s_final = max(50.0, math.floor(
             min(spacing_confinement, s_shear_x, s_shear_y, max_s_shear_x, max_s_shear_y) / 10.0) * 10.0)
@@ -507,22 +559,31 @@ class ACI318M25ColumnDesign:
 
         hx, hy = geometry.depth, geometry.width
         beta1 = 0.85 if fc_prime <= 28 else max(0.65, 0.85 - 0.05 * (fc_prime - 28) / 7.0)
-        phi_c, phi_f = self.phi_factors['compression_tied'], self.phi_factors['flexure']
+        phi_c = self.phi_factors['compression_tied'] if geometry.column_type == ColumnType.TIED else self.phi_factors['compression_spiral']
+        phi_f = self.phi_factors['flexure']
 
         Pn_max = self.calculate_axial_capacity(geometry, material_props, sum(a for _, _, a in bar_layout))
         axial_ratio = Pu / (phi_c * Pn_max) if Pn_max > 0 else float('inf')
         if axial_ratio >= 1.0 or (Mux < 0.01 and Muy < 0.01): return axial_ratio
 
         def compute_capacity_at_axis(h, b, is_x_axis):
+            is_circular = geometry.shape == ColumnShape.CIRCULAR
             curve_Pn, curve_phi_Mn = [], []
             for c in [h * x for x in
                       [10.0, 5.0, 2.0, 1.5, 1.2, 1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.05, 0.01]]:
                 Pn, Mn = 0.0, 0.0
                 a = min(beta1 * c, h)
                 if a > 0:
-                    Cc = (0.85 * fc_prime * a * b) / 1000.0
+                    if not is_circular:
+                        Cc = (0.85 * fc_prime * a * b) / 1000.0
+                        y_c = (h / 2.0 - a / 2.0)
+                    else:
+                        theta = 2 * math.acos(max(-1.0, min(1.0, 1.0 - 2 * a / h)))
+                        area_c = (h / 2.0) ** 2 / 2.0 * (theta - math.sin(theta))
+                        Cc = (0.85 * fc_prime * area_c) / 1000.0
+                        y_c = (2 * (h / 2.0) * math.sin(theta / 2) ** 3) / (3 * (theta - math.sin(theta))) if theta > 0 else 0
                     Pn += Cc;
-                    Mn += Cc * ((h / 2.0 - a / 2.0) / 1000.0)
+                    Mn += Cc * (y_c / 1000.0)
 
                 max_di, et = 0.0, 0.0
                 for x_bar, y_bar, a_bar in bar_layout:
@@ -567,16 +628,29 @@ class ACI318M25ColumnDesign:
         dx = geometry.width - geometry.cover - tie_diameter - (long_bar_diameter / 2)
         dy = geometry.depth - geometry.cover - tie_diameter - (long_bar_diameter / 2)
 
-        if vc_zero:
-            Vc_x = 0.0
-            Vc_y = 0.0
+        if geometry.shape == ColumnShape.CIRCULAR:
+            Ag = math.pi * (geometry.width / 2.0)**2
+            if vc_zero:
+                Vc_x = 0.0
+                Vc_y = 0.0
+            else:
+                Vc_x = 0.17 * math.sqrt(material_props.fc_prime) * (0.8 * Ag)
+                Vc_y = Vc_x
+            Vs_x = min(((math.pi / 2) * legs_x * self.aci.get_bar_area(transverse_bar) * material_props.fyt * (0.8 * geometry.width)) / spacing,
+                       0.66 * math.sqrt(material_props.fc_prime) * (0.8 * Ag))
+            Vs_y = min(((math.pi / 2) * legs_y * self.aci.get_bar_area(transverse_bar) * material_props.fyt * (0.8 * geometry.width)) / spacing,
+                       0.66 * math.sqrt(material_props.fc_prime) * (0.8 * Ag))
         else:
-            Vc_x = 0.17 * math.sqrt(material_props.fc_prime) * geometry.depth * dx
-            Vc_y = 0.17 * math.sqrt(material_props.fc_prime) * geometry.width * dy
-        Vs_x = min((legs_x * self.aci.get_bar_area(transverse_bar) * material_props.fyt * dx) / spacing,
-                   0.66 * math.sqrt(material_props.fc_prime) * geometry.depth * dx)
-        Vs_y = min((legs_y * self.aci.get_bar_area(transverse_bar) * material_props.fyt * dy) / spacing,
-                   0.66 * math.sqrt(material_props.fc_prime) * geometry.width * dy)
+            if vc_zero:
+                Vc_x = 0.0
+                Vc_y = 0.0
+            else:
+                Vc_x = 0.17 * math.sqrt(material_props.fc_prime) * geometry.depth * dx
+                Vc_y = 0.17 * math.sqrt(material_props.fc_prime) * geometry.width * dy
+            Vs_x = min((legs_x * self.aci.get_bar_area(transverse_bar) * material_props.fyt * dx) / spacing,
+                       0.66 * math.sqrt(material_props.fc_prime) * geometry.depth * dx)
+            Vs_y = min((legs_y * self.aci.get_bar_area(transverse_bar) * material_props.fyt * dy) / spacing,
+                       0.66 * math.sqrt(material_props.fc_prime) * geometry.width * dy)
 
         return self.phi_factors['shear'] * (Vc_x + Vs_x) / 1000.0, self.phi_factors['shear'] * (Vc_y + Vs_y) / 1000.0
 
@@ -682,6 +756,18 @@ class ACI318M25ColumnDesign:
                                    ca: JointColumnElement, pu: float) -> JointAnalysisResult:
         notes = []
 
+        # Unified gamma per ACI 318M-25 Table 18.8.3.1 — single value for both directions.
+        # Confinement: beam width >= 3/4 of the column face it frames into.
+        # bx1/bx2 frame into the y-face (col_geom.depth); by1/by2 frame into the x-face (col_geom.width).
+        c_bx1 = bx1.exists and bx1.b >= 0.75 * col_geom.depth
+        c_bx2 = bx2.exists and bx2.b >= 0.75 * col_geom.depth
+        c_by1 = by1.exists and by1.b >= 0.75 * col_geom.width
+        c_by2 = by2.exists and by2.b >= 0.75 * col_geom.width
+        confined_count = sum([c_bx1, c_bx2, c_by1, c_by2])
+        gamma = (1.7 if confined_count == 4 else
+                 1.2 if (confined_count >= 3 or (c_bx1 and c_bx2) or (c_by1 and c_by2)) else
+                 1.0)
+
         def evaluate_direction(b1: JointBeamElement, b2: JointBeamElement, col_b: float, col_h: float,
                                bending_axis: str):
             mnb_neg1, mnb_pos1, mpr_neg1, mpr_pos1 = self._calc_beam_hinge_capacities(b1.b, b1.d, b1.as_top, b1.as_bot,
@@ -694,7 +780,7 @@ class ACI318M25ColumnDesign:
                 0, 0, 0, 0)
             sum_mnb = max(mnb_pos1 + mnb_neg2, mnb_neg1 + mnb_pos2)
 
-            if sum_mnb == 0: return DirectionalJointResult(False, 0, 0, 0, 0, 0, 0, 1.0)
+            if sum_mnb == 0: return DirectionalJointResult(False, 0, 0, 0, 0, 0, 0, gamma)
 
             layout_below = self.generate_bar_layout(col_geom, col_res.reinforcement.longitudinal_bars,
                                                     col_res.reinforcement.tie_bars)
@@ -713,16 +799,14 @@ class ACI318M25ColumnDesign:
             if ratio_scwb < 1.2: notes.append(
                 f"SMF Violation: SC/WB ratio in {bending_axis.upper()}-Direction is {ratio_scwb:.2f}. Must be >= 1.2.")
 
-            bb_max = max(b1.b if b1.exists else 0, b2.b if b2.exists else 0)
-            bj = min(col_b, bb_max + col_h)
-
-            c1 = b1.exists and b1.b >= 0.75 * col_b
-            c2 = b2.exists and b2.b >= 0.75 * col_b
-            c3 = (by1.b >= 0.75 * col_h) if bending_axis == 'x' else (bx1.b >= 0.75 * col_h)
-            c4 = (by2.b >= 0.75 * col_h) if bending_axis == 'x' else (bx2.b >= 0.75 * col_h)
-            confined_count = sum([c1, c2, getattr(by1 if bending_axis == 'x' else bx1, 'exists') and c3,
-                                  getattr(by2 if bending_axis == 'x' else bx2, 'exists') and c4])
-            gamma = 1.7 if confined_count == 4 else (1.2 if confined_count == 3 or (c1 and c2) or (c3 and c4) else 1.0)
+            # Effective joint width per ACI 318M-25 §18.8.2.3, accounting for beam eccentricity.
+            # bj = min(col_b - 2|e|, bb + col_h) for each beam; take the most conservative.
+            bj = col_b
+            for beam in [b1, b2]:
+                if beam.exists:
+                    e = abs(beam.offset)
+                    bj = min(bj, col_b - 2.0 * e, beam.b + col_h)
+            bj = max(0.0, bj)
 
             phi_vj = 0.85 * gamma * math.sqrt(mat_props.fc_prime) * (bj * col_h) / 1000.0
 
