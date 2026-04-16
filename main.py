@@ -26,8 +26,10 @@ def index(request: air.Request):
                 air.Div(
                     air.Div(
                         air.H3("RC Beam Designer"),
-                        air.P("v0.8.2 beta.", style="margin-bottom: 20px; color: var(--text-secondary);"),
+                        air.P("v0.8.3 beta.", style="margin-bottom: 20px; color: var(--text-secondary);"),
                         air.A("Launch", href="/beam", class_="button"),
+                        air.A("User Manual", href="/beam/manual", target="_blank",
+                              class_="button secondary"),
                         class_="module-card"
                     ),
                     air.Div(

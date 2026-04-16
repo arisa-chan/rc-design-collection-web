@@ -7,6 +7,7 @@ import json
 from datetime import date
 import pdfkit
 from beam_pdf import generate_beam_report
+from beam_manual import generate_beam_manual
 
 # Import the ACI 318M-25 library components
 from aci318m25 import ConcreteStrengthClass, ReinforcementGrade, MaterialProperties
@@ -39,6 +40,7 @@ class BeamDesignModel(BaseModel):
     fc_prime: float = AirField(default=28.0)
     fy: float = AirField(default=420.0)
     fyt: float = AirField(default=420.0)
+    aggregate_size: float = AirField(default=20.0)
 
     deflection_limit: str = AirField(default="240")
     generate_pdf: str = AirField(default="")
@@ -372,7 +374,8 @@ def render_section_results(title, result, width, height, cover):
     side_bars = f"{len(result.reinforcement.side_bars)}x{result.reinforcement.side_bars[0]}" if result.reinforcement.side_bars else "None"
 
     transverse_str = f"{result.reinforcement.stirrups} @ {result.reinforcement.stirrup_spacing:.0f} mm"
-    if result.reinforcement.stirrup_spacing_hinge > 0: transverse_str = f"{result.reinforcement.stirrups} @ {result.reinforcement.stirrup_spacing_hinge:.0f} mm (Hinge)"
+    if result.reinforcement.stirrup_spacing_hinge > 0 and result.reinforcement.hinge_length > 0:
+        transverse_str = f"{result.reinforcement.stirrups} @ {result.reinforcement.stirrup_spacing_hinge:.0f} mm (Hinge)"
 
     status_color = "#16A34A" if result.utilization_ratio <= 1.0 else "#DC2626"
 
@@ -478,19 +481,19 @@ def setup_beam_routes(app):
                         air.H2("Geometry and Materials"),
                         air.Div(
                             air.Div(air.Label("Beam width (mm)"),
-                                    air.Input(type="number", name="width", value=str(data.width), required=True),
+                                    air.Input(type="number", name="width", value=str(data.width), step="any", required=True),
                                     class_="form-group"),
                             air.Div(air.Label("Beam depth (mm)"),
-                                    air.Input(type="number", name="height", value=str(data.height), required=True),
+                                    air.Input(type="number", name="height", value=str(data.height), step="any", required=True),
                                     class_="form-group"),
                             air.Div(air.Label("Effective depth (mm)"),
-                                    air.Input(type="number", name="effective_depth", value=str(data.effective_depth),
+                                    air.Input(type="number", name="effective_depth", value=str(data.effective_depth), step="any",
                                               required=True), class_="form-group"),
                             air.Div(air.Label("Center-to-center span (mm)"),
-                                    air.Input(type="number", name="length", value=str(data.length), required=True),
+                                    air.Input(type="number", name="length", value=str(data.length), step="any", required=True),
                                     class_="form-group"),
                             air.Div(air.Label("Clear span (mm)"),
-                                    air.Input(type="number", name="clear_span", value=str(data.clear_span),
+                                    air.Input(type="number", name="clear_span", value=str(data.clear_span), step="any",
                                               required=True), class_="form-group"),
                             air.Div(air.Label("Seismic Design Category"),
                                     air.Select(air.Option("A", value="A", selected=(data.sdc == "A")),
@@ -509,6 +512,9 @@ def setup_beam_routes(app):
                             air.Div(air.Label("Stirrup yield strength (MPa)"),
                                     air.Input(type="number", name="fyt", value=str(data.fyt), step="any",
                                               required=True), class_="form-group"),
+                            air.Div(air.Label("Max aggregate size (mm)"),
+                                    air.Input(type="number", name="aggregate_size", value=str(data.aggregate_size),
+                                              step="any", min="10", required=True), class_="form-group"),
                             air.Div(air.Label("Moment frame system"), air.Select(
                                 air.Option("Ordinary (OMF)", value="ordinary",
                                            selected=(data.frame_system == "ordinary")),
@@ -554,6 +560,15 @@ def setup_beam_routes(app):
             )
         )
 
+    @app.get("/beam/manual")
+    def beam_manual(request: air.Request):
+        pdf_bytes = generate_beam_manual()
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": 'inline; filename="rc_beam_designer_manual.pdf"'},
+        )
+
     @app.post("/beam/design")
     async def beam_design(request: air.Request):
         form_data = await request.form()
@@ -585,7 +600,7 @@ def setup_beam_routes(app):
             beam_geom = BeamGeometry(length=data.length, width=data.width, height=data.height,
                                      effective_depth=data.effective_depth, cover=cover, flange_width=0.0,
                                      flange_thickness=0.0, beam_type=BeamType.RECTANGULAR, clear_span=data.clear_span,
-                                     sdc=sdc_enum, frame_system=frame_enum)
+                                     sdc=sdc_enum, frame_system=frame_enum, aggregate_size=data.aggregate_size)
 
             custom_lib = ACI318M25MemberLibrary()
             custom_lib.beam_design = ControlledBeamDesign(data.pref_main, data.pref_stirrup, data.pref_torsion)
@@ -618,6 +633,11 @@ def setup_beam_routes(app):
                                                                             max_as_support=max_as_support)
 
             # ----- UNIFICATION & CONSTRUCTABILITY ENGINE -----
+
+            # Detect cantilever early so unification steps can use it
+            _left_is_free = (float(data.left_mu_neg) == 0 and float(data.left_mu_pos) == 0)
+            _right_is_free = (float(data.right_mu_neg) == 0 and float(data.right_mu_pos) == 0)
+            _is_cantilever = (_left_is_free != _right_is_free)  # exactly one end free
 
             # 1. Sync Stirrup Legs & Enforce Minimum Constructability
             def get_legs(s):
@@ -656,10 +676,21 @@ def setup_beam_routes(app):
                 r.reinforcement.bottom_area = get_area(r.reinforcement.bottom_bars)
 
             # 3. Sync Stirrup Spacing (Left & Right Hinge)
-            min_hinge_s = min(res_left.reinforcement.stirrup_spacing_hinge,
-                              res_right.reinforcement.stirrup_spacing_hinge)
-            res_left.reinforcement.stirrup_spacing_hinge = min_hinge_s
-            res_right.reinforcement.stirrup_spacing_hinge = min_hinge_s
+            if _is_cantilever:
+                # For a cantilever, only the fixed end has a seismic hinge zone.
+                # Clear hinge properties on the free end so it uses regular span spacing.
+                if _left_is_free:
+                    res_left.reinforcement.hinge_length = 0.0
+                    res_left.reinforcement.stirrup_spacing_hinge = res_left.reinforcement.stirrup_spacing
+                else:  # right end is free
+                    res_right.reinforcement.hinge_length = 0.0
+                    res_right.reinforcement.stirrup_spacing_hinge = res_right.reinforcement.stirrup_spacing
+            else:
+                # Span beam: sync both hinge spacings to the more restrictive (smaller) value
+                min_hinge_s = min(res_left.reinforcement.stirrup_spacing_hinge,
+                                  res_right.reinforcement.stirrup_spacing_hinge)
+                res_left.reinforcement.stirrup_spacing_hinge = min_hinge_s
+                res_right.reinforcement.stirrup_spacing_hinge = min_hinge_s
 
             # 4. Sync Torsion Side Bars uniformly
             max_side_area = max(get_area(res_left.reinforcement.side_bars), get_area(res_mid.reinforcement.side_bars),
@@ -687,34 +718,35 @@ def setup_beam_routes(app):
                     r.reinforcement.bottom_area, beam_geom, mat_props)
 
                 actual_s = r.reinforcement.stirrup_spacing_hinge if is_support else r.reinforcement.stirrup_spacing
+                As_prov = max(r.reinforcement.top_area, r.reinforcement.bottom_area)
                 r.shear_capacity = phi_v * custom_lib.beam_design._calculate_shear_capacity(beam_geom, mat_props,
                                                                                             r.reinforcement.stirrups,
-                                                                                            actual_s)
+                                                                                            actual_s, As_prov)
 
-                # Compute Vc for torsion interaction — Vc = 0 for special moment frames
-                # when earthquake shear component ≥ 0.5 * Vu (ACI 318M-25 §18.6.5.2)
-                Vc = 0.17 * math.sqrt(mat_props.fc_prime) * beam_geom.width * beam_geom.effective_depth  # N
+                # Compute Vc for torsion interaction using ACI 318M-25 Table 22.5.5.1 (Av-aware)
+                Vc = custom_lib.beam_design._calculate_vc(beam_geom, mat_props,
+                                                         r.reinforcement.stirrups, actual_s, As_prov)  # N
                 if beam_geom.frame_system == FrameSystem.SPECIAL:
                     ve_component = r.capacity_shear_ve - gravity_v  # kN
                     if ve_component >= 0.5 * vu:  # both in kN
                         Vc = 0.0
 
-                if r.reinforcement.torsion_required:
-                    r.torsion_capacity = phi_t * custom_lib.beam_design._calculate_torsion_capacity(beam_geom,
-                                                                                                    mat_props,
-                                                                                                    r.reinforcement.stirrups,
-                                                                                                    actual_s,
-                                                                                                    r.capacity_shear_ve * 1000,  # Ve in N
-                                                                                                    Vc)  # Vc in N
-                else:
-                    r.torsion_capacity = 0.0
+                # Always compute torsion capacity — section has stirrups providing inherent
+                # torsion resistance regardless of whether torsion reinforcement was required.
+                r.torsion_capacity = phi_t * custom_lib.beam_design._calculate_torsion_capacity(beam_geom,
+                                                                                                mat_props,
+                                                                                                r.reinforcement.stirrups,
+                                                                                                actual_s,
+                                                                                                r.capacity_shear_ve * 1000,  # Ve in N
+                                                                                                Vc)  # Vc in N
 
                 # All demands and capacities in consistent units:
                 #   moments: kN-m, shear: kN, torsion: kN-m
                 util_m_top = mu_top / r.moment_capacity_top if r.moment_capacity_top > 0 else 1.0
                 util_m_bot = mu_bot / r.moment_capacity_bot if r.moment_capacity_bot > 0 else 1.0
                 util_v = vu / r.shear_capacity if r.shear_capacity > 0 else 1.0
-                util_t = tu / r.torsion_capacity if (r.torsion_capacity > 0 and tu > 0) else 0.0
+                # Only count torsion in DCR when tu exceeds the ACI threshold (torsion_required)
+                util_t = tu / r.torsion_capacity if (r.torsion_capacity > 0 and tu > 0 and r.reinforcement.torsion_required) else 0.0
                 r.utilization_ratio = max(util_m_top, util_m_bot, util_v, util_t)
 
             recalc(res_left, True, data.left_mu_neg, data.left_mu_pos, data.left_vu, data.left_tu, data.left_vg)
@@ -745,12 +777,10 @@ def setup_beam_routes(app):
             d_prime = max(40.0, data.height - data.effective_depth)
             b = data.width
 
-            # ---------------------------------------------------------
-            # Detect cantilever: one end has both Mu+ and Mu- equal to zero
-            # ---------------------------------------------------------
-            left_is_free = (float(data.left_mu_neg) == 0 and float(data.left_mu_pos) == 0)
-            right_is_free = (float(data.right_mu_neg) == 0 and float(data.right_mu_pos) == 0)
-            is_cantilever = (left_is_free != right_is_free)  # exactly one end free
+            # Reuse cantilever flags already computed before the unification engine
+            left_is_free = _left_is_free
+            right_is_free = _right_is_free
+            is_cantilever = _is_cantilever
 
             if is_cantilever:
                 # ---------------------------------------------------------
