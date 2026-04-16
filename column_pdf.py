@@ -9,8 +9,40 @@ from aci318m25_column import FrameSystem, ColumnShape
 aci_tool = ACI318M25()
 
 
-def draw_column_section_tikz(width, depth, cover, num_bars, legs_x, legs_y):
+def draw_column_section_tikz(width, depth, cover, num_bars, legs_x, legs_y, shape="rectangular", column_type="tied"):
     """Generates TikZ code for a column cross-section diagram."""
+    if shape == "circular":
+        diameter = width
+        s = 4.0 / diameter
+        r = diameter * s / 2.0
+        cx, cy = r, r
+        c_r = (diameter / 2.0 - cover) * s
+        r_bar = 0.08
+
+        tikz = [
+            r"\begin{tikzpicture}[scale=1.0]",
+            fr"\draw[line width=1.5pt] ({cx:.3f},{cy:.3f}) circle ({r:.3f});",
+        ]
+        # Spiral: solid continuous circle; Tied: dashed hoops
+        if column_type == "spiral":
+            tikz.append(fr"\draw[line width=1.2pt, red] ({cx:.3f},{cy:.3f}) circle ({c_r:.3f});")
+        else:
+            tikz.append(fr"\draw[line width=0.8pt, dashed, red] ({cx:.3f},{cy:.3f}) circle ({c_r:.3f});")
+
+        def bar(x, y):
+            tikz.append(fr"\fill[blue] ({x:.3f},{y:.3f}) circle ({r_bar});")
+
+        bar_r = c_r - 0.12
+        for i in range(num_bars):
+            theta = i * (2 * math.pi / max(1, num_bars))
+            bar(cx + bar_r * math.cos(theta), cy + bar_r * math.sin(theta))
+
+        # Dimension
+        tikz.append(fr"\draw[<->] ({cx-r:.3f},{cy+r+0.4:.3f}) -- ({cx+r:.3f},{cy+r+0.4:.3f}) node[midway, above] {{\\diameter {diameter:.0f} mm}};")
+        tikz.append(r"\end{tikzpicture}")
+        return "\n".join(tikz)
+
+    # Rectangular
     s = 4.0 / max(width, depth)
     w, h = width * s, depth * s
     c = cover * s
@@ -69,8 +101,8 @@ def draw_column_section_tikz(width, depth, cover, num_bars, legs_x, legs_y):
     return "\n".join(tikz)
 
 
-def draw_column_elevation_tikz(height, clear_height, max_dim, s_hinge, s_mid):
-    """Generates TikZ code for a column elevation showing tie spacing zones."""
+def draw_column_elevation_tikz(height, clear_height, max_dim, s_hinge, s_mid, column_type="tied", shape="rectangular"):
+    """Generates TikZ code for a column elevation showing tie/spiral spacing zones."""
     lo = max(max_dim, clear_height / 6.0, 450.0) if s_hinge != s_mid else 0.0
     if lo > 0 and lo * 2 >= clear_height:
         lo = clear_height / 2.0
@@ -90,17 +122,33 @@ def draw_column_elevation_tikz(height, clear_height, max_dim, s_hinge, s_mid):
         x = xf * vis_w
         tikz.append(fr"\draw[blue, line width=1pt] ({x:.3f},-0.1) -- ({x:.3f},{vis_h+0.1:.3f});")
 
-    # Ties
+    # Ties or Spiral zigzag
     y = 50.0 * s
     guard = 0
-    while y <= (height - 50.0) * s and guard < 300:
-        guard += 1
-        actual_y = y / s
-        is_hinge = (actual_y <= lo) or (actual_y >= height - lo) if lo > 0 else False
-        color = "red" if is_hinge else "gray"
-        tikz.append(fr"\draw[{color}, line width=0.6pt] (0.08,{y:.3f}) -- ({vis_w-0.08:.3f},{y:.3f});")
-        current_s = s_hinge if is_hinge else s_mid
-        y += current_s * s
+    if shape == "circular" and column_type == "spiral":
+        going_right = True
+        while y <= (height - 50.0) * s and guard < 300:
+            guard += 1
+            actual_y = y / s
+            is_hinge = (actual_y <= lo) or (actual_y >= height - lo) if lo > 0 else False
+            color = "red" if is_hinge else "gray"
+            current_s = s_hinge if is_hinge else s_mid
+            y_end = min(y + current_s * s, (height - 50.0) * s)
+            if going_right:
+                tikz.append(fr"\draw[{color}, line width=0.8pt] (0.08,{y:.3f}) -- ({vis_w-0.08:.3f},{y_end:.3f});")
+            else:
+                tikz.append(fr"\draw[{color}, line width=0.8pt] ({vis_w-0.08:.3f},{y:.3f}) -- (0.08,{y_end:.3f});")
+            going_right = not going_right
+            y = y_end
+    else:
+        while y <= (height - 50.0) * s and guard < 300:
+            guard += 1
+            actual_y = y / s
+            is_hinge = (actual_y <= lo) or (actual_y >= height - lo) if lo > 0 else False
+            color = "red" if is_hinge else "gray"
+            tikz.append(fr"\draw[{color}, line width=0.6pt] (0.08,{y:.3f}) -- ({vis_w-0.08:.3f},{y:.3f});")
+            current_s = s_hinge if is_hinge else s_mid
+            y += current_s * s
 
     # Zone labels
     if lo > 0:
@@ -146,7 +194,8 @@ def generate_column_report(data, mat, geom, loads, engine, res, n_bars, s_outsid
     fyt = data.fyt
     b = data.width
     h = data.depth
-    Ag = b * h
+    is_circular = (data.shape == "circular")
+    Ag = math.pi * (b / 2.0) ** 2 if is_circular else b * h
     As = res.reinforcement.longitudinal_area
     cover = 40.0
     is_smf = (data.frame_system == "special")
@@ -158,7 +207,10 @@ def generate_column_report(data, mat, geom, loads, engine, res, n_bars, s_outsid
             itemize.add_item(NoEscape(fr"Main rebar yield strength, $f_y = {fy}$ MPa"))
             itemize.add_item(NoEscape(fr"Tie yield strength, $f_{{yt}} = {fyt}$ MPa"))
             itemize.add_item(NoEscape(fr"Modulus of elasticity, $E_c = {mat.ec:.0f}$ MPa"))
-            itemize.add_item(NoEscape(fr"Column dimensions: $b = {b}$ mm $\times$ $h = {h}$ mm"))
+            if is_circular:
+                itemize.add_item(NoEscape(fr"Column diameter: $D = {b}$ mm"))
+            else:
+                itemize.add_item(NoEscape(fr"Column dimensions: $b = {b}$ mm $\times$ $h = {h}$ mm"))
             itemize.add_item(NoEscape(fr"Floor-to-floor height $H = {data.height}$ mm, clear height $l_u = {data.clear_height}$ mm"))
             itemize.add_item(NoEscape(fr"SDC {data.sdc}, {data.frame_system.title()} moment frame"))
 
@@ -176,13 +228,15 @@ def generate_column_report(data, mat, geom, loads, engine, res, n_bars, s_outsid
 
         with doc.create(Figure(position='h!')) as fig:
             fig.append(NoEscape(draw_column_section_tikz(b, h, cover, n_bars,
-                                                          res.reinforcement.tie_legs_x, res.reinforcement.tie_legs_y)))
+                                                          res.reinforcement.tie_legs_x, res.reinforcement.tie_legs_y,
+                                                          data.shape, data.column_type)))
             fig.add_caption("Column Cross-Section")
 
         with doc.create(Figure(position='h!')) as fig:
             fig.append(NoEscape(draw_column_elevation_tikz(data.height, data.clear_height,
-                                                            max(b, h), res.reinforcement.tie_spacing, s_outside)))
-            fig.add_caption("Column Elevation — Tie Zones")
+                                                            max(b, h), res.reinforcement.tie_spacing, s_outside,
+                                                            data.column_type, data.shape)))
+            fig.add_caption("Column Elevation --- Tie/Spiral Zones")
 
     # ── Section 3: Design Calculations ──
     with doc.create(Section("Design Calculations")):
@@ -194,7 +248,10 @@ def generate_column_report(data, mat, geom, loads, engine, res, n_bars, s_outsid
             doc.append(NoEscape(r'\vspace*{0.5em}'))
             doc.append(NoEscape(r'\\'))
 
-            doc.append(Math(data=[NoEscape(fr"A_g = b \times h = {b:.0f} \times {h:.0f} = {Ag:.0f} \text{{ mm}}^2")]))
+            if is_circular:
+                doc.append(Math(data=[NoEscape(fr"A_g = \frac{{\pi D^2}}{{4}} = \frac{{\pi \times {b:.0f}^2}}{{4}} = {Ag:.0f} \text{{ mm}}^2")]))
+            else:
+                doc.append(Math(data=[NoEscape(fr"A_g = b \times h = {b:.0f} \times {h:.0f} = {Ag:.0f} \text{{ mm}}^2")]))
 
             Po = 0.85 * fc * (Ag - As) + fy * As
             doc.append(Math(data=[NoEscape(

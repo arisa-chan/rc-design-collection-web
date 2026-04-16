@@ -9,6 +9,7 @@ from datetime import date
 from aci318m25 import MaterialProperties
 from aci318m25_complete import ACI318M25MemberLibrary
 from column_pdf import generate_column_report
+from column_manual import generate_column_manual
 from aci318m25_column import (
     ACI318M25ColumnDesign, ColumnGeometry, ColumnLoads, ColumnShape, ColumnType,
     LoadCondition, SeismicDesignCategory, FrameSystem, JointBeamElement, JointColumnElement
@@ -102,7 +103,7 @@ class ColumnDesignModel(BaseModel):
 # ----------------------------------------------------------------------
 # 2. UI RENDER HELPERS
 # ----------------------------------------------------------------------
-def generate_column_section_css(width, depth, cover, num_bars, legs_x, legs_y, shape="rectangular"):
+def generate_column_section_css(width, depth, cover, num_bars, legs_x, legs_y, shape="rectangular", column_type="tied"):
     scale = min(200 / max(width, 1), 200 / max(depth, 1)) if shape == "rectangular" else 200 / max(width, 1)
     draw_w = width * scale
     draw_h = depth * scale if shape == "rectangular" else width * scale
@@ -113,7 +114,11 @@ def generate_column_section_css(width, depth, cover, num_bars, legs_x, legs_y, s
     if core_w > 0 and core_h > 0:
         # Draw Ties
         if shape == "circular":
-            children.append(air.Div(style=f"position: absolute; left: {c_s}px; top: {c_s}px; width: {core_w}px; height: {core_h}px; border: 2px dashed #db2777; border-radius: 50%; box-sizing: border-box;"))
+            if column_type == "spiral":
+                # Solid continuous circle for spiral (helix cross-section)
+                children.append(air.Div(style=f"position: absolute; left: {c_s}px; top: {c_s}px; width: {core_w}px; height: {core_h}px; border: 3px solid #db2777; border-radius: 50%; box-sizing: border-box;"))
+            else:
+                children.append(air.Div(style=f"position: absolute; left: {c_s}px; top: {c_s}px; width: {core_w}px; height: {core_h}px; border: 2px dashed #db2777; border-radius: 50%; box-sizing: border-box;"))
         else:
             children.append(air.Div(
                 style=f"position: absolute; left: {c_s}px; top: {c_s}px; width: {core_w}px; height: {core_h}px; border: 2px dashed #db2777; border-radius: 4px; box-sizing: border-box;"))
@@ -164,8 +169,9 @@ def generate_column_section_css(width, depth, cover, num_bars, legs_x, legs_y, s
                 for i in range(1, ny_face + 1): add_bar(bx, by + i * sp_y); add_bar(bx + bw, by + i * sp_y)
 
     radius_style = "border-radius: 50%;" if shape == "circular" else "border-radius: 4px;"
+    overflow_style = "overflow: hidden;" if shape == "circular" else ""
     concrete_block = air.Div(*children,
-                             style=f"position: relative; width: {draw_w}px; height: {draw_h}px; background: var(--bg-elevated); border: 3px solid var(--text-primary); {radius_style} box-sizing: border-box; margin: 0 auto;")
+                             style=f"position: relative; width: {draw_w}px; height: {draw_h}px; background: var(--bg-elevated); border: 3px solid var(--text-primary); {radius_style} {overflow_style} box-sizing: border-box; margin: 0 auto;")
     return air.Div(
         air.Div(f"Diameter {width} mm" if shape == "circular" else f"{width} mm",
                 style="text-align: center; font-family: monospace; font-weight: 700; color: var(--text-muted); margin-bottom: 8px;"),
@@ -176,7 +182,7 @@ def generate_column_section_css(width, depth, cover, num_bars, legs_x, legs_y, s
     )
 
 
-def generate_column_elevation_css(height, clear_height, max_dim, s_hinge, s_mid):
+def generate_column_elevation_css(height, clear_height, max_dim, s_hinge, s_mid, shape="rectangular", column_type="tied"):
     lo = max(max_dim, clear_height / 6.0, 450.0) if s_hinge != s_mid else 0.0
     if lo * 2 >= clear_height: lo = clear_height / 2.0
 
@@ -194,17 +200,37 @@ def generate_column_elevation_css(height, clear_height, max_dim, s_hinge, s_mid)
     children.append(air.Div(
         style="position: absolute; right: 15%; top: -5px; bottom: -5px; width: 4px; background: #2563eb; border-radius: 2px; z-index: 2;"))
 
-    # Horizontal Ties
+    # Horizontal Ties / Spiral zigzag
     y = 50.0
     loop_guard = 0
-    while y <= height - 50.0 and loop_guard < 300:
-        loop_guard += 1
-        is_hinge = (y <= lo) or (y >= height - lo)
-        current_s = s_hinge if is_hinge else s_mid
-        color = "#db2777" if is_hinge else "#9ca3af"
-        children.append(air.Div(
-            style=f"position: absolute; bottom: {y * scale}px; left: 5%; right: 5%; height: 2px; background: {color}; z-index: 1;"))
-        y += current_s
+    if shape == "circular" and column_type == "spiral":
+        going_right = True
+        while y <= height - 50.0 and loop_guard < 300:
+            loop_guard += 1
+            is_hinge = (y <= lo) or (y >= height - lo)
+            current_s = s_hinge if is_hinge else s_mid
+            color = "#db2777" if is_hinge else "#9ca3af"
+            y_end = min(y + current_s, height - 50.0)
+            y_px = y * scale
+            h_px = (y_end - y) * scale
+            if going_right:
+                gradient = f"linear-gradient(to top right, transparent calc(50% - 1px), {color} calc(50% - 1px), {color} calc(50% + 1px), transparent calc(50% + 1px))"
+            else:
+                gradient = f"linear-gradient(to top left, transparent calc(50% - 1px), {color} calc(50% - 1px), {color} calc(50% + 1px), transparent calc(50% + 1px))"
+            if h_px > 0:
+                children.append(air.Div(
+                    style=f"position: absolute; bottom: {y_px:.1f}px; left: 5%; right: 5%; height: {h_px:.1f}px; background: {gradient}; z-index: 1;"))
+            going_right = not going_right
+            y += current_s
+    else:
+        while y <= height - 50.0 and loop_guard < 300:
+            loop_guard += 1
+            is_hinge = (y <= lo) or (y >= height - lo)
+            current_s = s_hinge if is_hinge else s_mid
+            color = "#db2777" if is_hinge else "#9ca3af"
+            children.append(air.Div(
+                style=f"position: absolute; bottom: {y * scale}px; left: 5%; right: 5%; height: 2px; background: {color}; z-index: 1;"))
+            y += current_s
 
     # Confinement Zone Dimension Labels
     labels = []
@@ -347,6 +373,15 @@ def build_scwb_element(d_res, title):
 # 3. MODULE ROUTES
 # ----------------------------------------------------------------------
 def setup_column_routes(app):
+    @app.get("/column/manual")
+    def column_manual_route(request: air.Request):
+        pdf_bytes = generate_column_manual()
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": 'inline; filename="rc_column_designer_manual.pdf"'},
+        )
+
     @app.get("/column")
     def column_index(request: air.Request):
         data = ColumnDesignModel(**json.loads(request.cookies.get("col_inputs", "{}"))) if request.cookies.get(
@@ -393,8 +428,8 @@ def setup_column_routes(app):
                                         onchange=(
                                             "var isCirc = this.value === 'circular';"
                                             "document.getElementById('depth_group').style.display = isCirc ? 'none' : 'block';"
-                                            "document.getElementById('col_type_sel').value = isCirc ? 'spiral' : 'tied';"
-                                            "document.querySelector(\"label[for='width_lbl']\").textContent = isCirc ? 'Diameter (mm)' : 'Width along x (mm)';"
+                                            "if (!isCirc) { document.getElementById('col_type_sel').value = 'tied'; }"
+                                            "document.getElementById('width_lbl').textContent = isCirc ? 'Diameter (mm)' : 'Width along x (mm)';"
                                         )
                                     ),
                                     class_="form-group"),
@@ -405,7 +440,7 @@ def setup_column_routes(app):
                                         name="column_type", id="col_type_sel"
                                     ),
                                     class_="form-group"),
-                            air.Div(air.Label("Width along x (mm)" if data.shape != "circular" else "Diameter (mm)", for_="width_lbl"),
+                            air.Div(air.Label("Width along x (mm)" if data.shape != "circular" else "Diameter (mm)", id="width_lbl"),
                                     air.Input(type="number", name="width", value=str(data.width), required=True, step="any"),
                                     class_="form-group"),
                             air.Div(air.Label("Width along y (mm)"),
@@ -605,6 +640,26 @@ def setup_column_routes(app):
                                        data.top_ca_pu), data.pu
                 )
                 res.design_notes.extend(j_res.notes)
+                # Check beam projection beyond column face per ACI 318M-25 §18.8.2.3
+                if data.shape == "rectangular":
+                    proj_checks = [
+                        ("Beam bx1 (x-left)", data.top_bx1_exists, data.top_bx1_b, data.top_bx1_offset, data.depth),
+                        ("Beam bx2 (x-right)", data.top_bx2_exists, data.top_bx2_b, data.top_bx2_offset, data.depth),
+                        ("Beam by1 (y-left)", data.top_by1_exists, data.top_by1_b, data.top_by1_offset, data.width),
+                        ("Beam by2 (y-right)", data.top_by2_exists, data.top_by2_b, data.top_by2_offset, data.width),
+                    ]
+                    for beam_lbl, exists, beam_bw, offset, c2 in proj_checks:
+                        if exists == 'yes':
+                            proj = max(0.0, beam_bw / 2.0 + abs(offset) - c2 / 2.0)
+                            max_proj = min(c2 / 4.0, 100.0)
+                            if proj > max_proj:
+                                res.design_notes.append(
+                                    f"Violation: {beam_lbl} projects {proj:.0f} mm beyond column face, exceeds {max_proj:.0f} mm limit (ACI 318M-25 §18.8.2.3)"
+                                )
+                            elif proj > 0:
+                                res.design_notes.append(
+                                    f"{beam_lbl} projects {proj:.0f} mm beyond column face — within {max_proj:.0f} mm limit (ACI 318M-25 §18.8.2.3)"
+                                )
                 gamma_val = j_res.x_dir.gamma if j_res.x_dir.exists else j_res.y_dir.gamma
                 sc_wb_element = air.Div(
                     air.H4("Seismic Joint Checks", style="color: var(--cyan); margin-bottom: 12px;"),
@@ -708,9 +763,9 @@ def setup_column_routes(app):
                 air.Div(air.H2("Design Results"), air.Div(
                     air.Div(
                         generate_column_section_css(data.width, data.depth, 40.0, n_bars, res.reinforcement.tie_legs_x,
-                                                    res.reinforcement.tie_legs_y, data.shape),
+                                                    res.reinforcement.tie_legs_y, data.shape, data.column_type),
                         generate_column_elevation_css(data.height, data.clear_height, max(data.width, data.depth),
-                                                      res.reinforcement.tie_spacing, s_outside),
+                                                      res.reinforcement.tie_spacing, s_outside, data.shape, data.column_type),
                         style="display: flex; flex-direction: column; gap: 16px;"
                     ),
                     air.Div(
