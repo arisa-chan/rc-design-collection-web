@@ -186,8 +186,17 @@ def generate_prestress_beam_report(data, results):
                 it.add_item(f"Tendon material: {data.material.replace('_', ' ').upper()}")
                 it.add_item(NoEscape(fr"Strand/bar dia.: {data.strand_dia}\,mm"))
                 it.add_item(f"Number of tendons: {data.num_tendons}")
-                it.add_item(NoEscape(fr"Eccentricity: $e = {data.eccentricity}$\,mm"))
-                it.add_item(f"Tendon profile: {data.tendon_profile.replace('_', ' ').title()}")
+                # Per-span tendon details (derive from spans_detail_data)
+                try:
+                    import json as _json
+                    _pdf_sd = _json.loads(data.spans_detail_data) if data.spans_detail_data else []
+                except Exception:
+                    _pdf_sd = []
+                _pdf_first_sd = _pdf_sd[0] if _pdf_sd else {}
+                _pdf_e = _pdf_first_sd.get('e_m', 200.0)
+                _pdf_profile = _pdf_first_sd.get('profile', 'parabolic').replace('_', ' ').title()
+                it.add_item(NoEscape(fr"Eccentricity (Span 1 midspan): $e = {_pdf_e}$\,mm"))
+                it.add_item(f"Tendon profile (Span 1): {_pdf_profile}")
                 it.add_item(NoEscape(
                     fr"Jacking force: {data.jacking_force:.1f}\,kN/tendon"
                     + (" (auto)" if data.jacking_force <= 0 else "")
@@ -201,11 +210,20 @@ def generate_prestress_beam_report(data, results):
                     fr"Time-dep. loss: {data.time_loss_mpa:.1f}\,MPa"
                     + (" (auto)" if data.time_loss_mpa <= 0 else "")
                 ))
-                if data.rebar_as_bot > 0 or data.rebar_as_top > 0:
+                import math as _pdf_m
+                _pdf_as_bot = max(
+                    (_pdf_m.pi/4*float(sd.get('bd_m',20))**2*int(sd.get('bn_m',0)) for sd in _pdf_sd),
+                    default=0.0
+                )
+                _pdf_as_top = max(
+                    (_pdf_m.pi/4*float(sd.get('td_m',16))**2*int(sd.get('tn_m',0)) for sd in _pdf_sd),
+                    default=0.0
+                )
+                if _pdf_as_bot > 0 or _pdf_as_top > 0:
                     it.add_item(NoEscape(
                         fr"Passive rebar: $f_y = {data.rebar_fy}$\,MPa,"
-                        fr" $A_s = {data.rebar_as_bot:.1f}$\,mm$^2$ (bot.),"
-                        fr" $A'_s = {data.rebar_as_top:.1f}$\,mm$^2$ (top.)"
+                        fr" $A_s = {_pdf_as_bot:.1f}$\,mm$^2$ (bot.),"
+                        fr" $A'_s = {_pdf_as_top:.1f}$\,mm$^2$ (top.)"
                     ))
                 it.add_item(NoEscape(
                     fr"Long-term multiplier: $\lambda_\Delta = {data.long_term_multiplier}$"
@@ -307,7 +325,13 @@ def generate_prestress_beam_report(data, results):
             bw = data.width
             bf = data.t_flange_width  if data.t_flange_width  > 0 else data.width
             hf = data.t_flange_height if data.t_flange_width  > 0 else data.height
-            e  = data.eccentricity
+            try:
+                import json as _json_pdf
+                _sd_list = _json_pdf.loads(data.spans_detail_data) if data.spans_detail_data else []
+            except Exception:
+                _sd_list = []
+            _sd_span = _sd_list[res.span_index] if res.span_index < len(_sd_list) else {}
+            e  = float(_sd_span.get('e_m', 200.0))
             dp = yt + e
 
             # Prestress forces (from stored results)

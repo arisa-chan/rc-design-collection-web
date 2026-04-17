@@ -36,18 +36,19 @@ class PrestressBeamModel(BaseModel):
     material: str = AirField(default="astm_a416_strand")
     strand_dia: str = AirField(default="12.70")
     num_tendons: int = AirField(default=10)
-    tendon_profile: str = AirField(default="straight")
-    eccentricity: float = AirField(default=200.0)
     slip: float = AirField(default=6.0)
     friction_mu: float = AirField(default=0.2)
     friction_k: float = AirField(default=0.0066)  # 1/m — PTI grouted duct midrange
     jacking_force: float = AirField(default=0.0)
     time_loss_mpa: float = AirField(default=0.0)
     
-    # Optional Rebar
+    # Per-span tendon profile, eccentricity, and reinforcement (stored as JSON array)
+    # Each element: {profile, e_l, e_m, e_r, tn_l, td_l, tn_m, td_m, tn_r, td_r,
+    #                bn_l, bd_l, bn_m, bd_m, bn_r, bd_r, st_d, st_sl, st_sm, st_sr}
+    spans_detail_data: str = AirField(default='[]')
+
+    # Rebar yield strength (global material property)
     rebar_fy: float = AirField(default=420.0)
-    rebar_as_top: float = AirField(default=0.0)
-    rebar_as_bot: float = AirField(default=0.0)
 
     # Deflection Settings (ACI 318M-25 Table 24.2.4.1.3 / Table 24.2.2)
     long_term_multiplier: float = AirField(default=2.0)
@@ -77,12 +78,14 @@ def setup_prestress_beam_routes(app):
             except Exception:
                 return fallback
 
-        safe_spans    = _safe_js_json(data.spans_data,    '[{"length":10000.0}]')
-        safe_supports = _safe_js_json(data.supports_data, '[{"type":"column/wall"},{"type":"column/wall"}]')
-        safe_loads    = _safe_js_json(data.loads_data,    '[]')
+        safe_spans        = _safe_js_json(data.spans_data,       '[{"length":10000.0}]')
+        safe_supports     = _safe_js_json(data.supports_data,    '[{"type":"column/wall"},{"type":"column/wall"}]')
+        safe_loads        = _safe_js_json(data.loads_data,       '[]')
+        safe_spans_detail = _safe_js_json(data.spans_detail_data,'[]')
         ps_init_script = (
             f'window._psInit = {{"spans":{safe_spans},'
-            f'"supports":{safe_supports},"loads":{safe_loads}}};'
+            f'"supports":{safe_supports},"loads":{safe_loads},'
+            f'"spans_detail":{safe_spans_detail}}};'
         )
 
         csrf_token = ""
@@ -126,9 +129,10 @@ def setup_prestress_beam_routes(app):
                             air.Div(air.Label("T-Flange height hf (mm) [0 = rect]"), air.Input(type="number", name="t_flange_height", value=str(data.t_flange_height), step="any", min="0"), class_="form-group"),
                             class_="grid-3"
                         ),
-                        air.Input(type="hidden", name="spans_data",    id="spans_data",    value=""),
-                        air.Input(type="hidden", name="supports_data", id="supports_data", value=""),
-                        air.Input(type="hidden", name="loads_data",    id="loads_data",    value=""),
+                        air.Input(type="hidden", name="spans_data",        id="spans_data",        value=""),
+                        air.Input(type="hidden", name="supports_data",     id="supports_data",     value=""),
+                        air.Input(type="hidden", name="loads_data",        id="loads_data",        value=""),
+                        air.Input(type="hidden", name="spans_detail_data", id="spans_detail_data", value=""),
                         air.Script(ps_init_script),
                         air.Div(
                             air.H3("Geometry and Tendon Visualization", style="margin-top: 16px;"),
@@ -137,6 +141,10 @@ def setup_prestress_beam_routes(app):
                             air.Div(id="spans_container"),
                             air.H3("Supports", style="margin-top: 16px;"),
                             air.Div(id="supports_container"),
+                            air.H3("Per-Span Tendon Profile & Reinforcement", style="margin-top: 16px;"),
+                            air.P("Set the tendon profile, eccentricity (mm, + = below centroid), and mild reinforcement for each span.",
+                                  style="color:#64748b;font-size:13px;margin-bottom:4px;"),
+                            air.Div(id="span_detail_container"),
                             air.H3("Loads", style="margin-top: 16px; display:inline-block; margin-right: 16px;"),
                             air.Button("Add Load", type="button", id="add_load_btn", class_="button secondary", style="padding: 4px 12px; font-size:12px; margin-bottom: 8px;"),
                             air.Div(id="loads_container"),
@@ -145,10 +153,22 @@ def setup_prestress_beam_routes(app):
                             document.addEventListener("DOMContentLoaded", () => {
                                 // Read initial state injected via <script> tag (avoids HTML-attribute
                                 // double-quote escaping issues that would break JSON).
-                                let _init        = (window._psInit || {});
-                                let spansData    = (_init.spans    || [{length: 10000}]).slice();
-                                let supportsData = (_init.supports || [{type:"column/wall"},{type:"column/wall"}]).slice();
-                                let loadsData    = (_init.loads    || []).slice();
+                                let _init          = (window._psInit || {});
+                                let spansData      = (_init.spans        || [{length: 10000}]).slice();
+                                let supportsData   = (_init.supports     || [{type:"column/wall"},{type:"column/wall"}]).slice();
+                                let loadsData      = (_init.loads        || []).slice();
+                                let spansDetailData = (_init.spans_detail || []).slice();
+
+                                // Default per-span detail object
+                                function defaultDetail() {
+                                    return {
+                                        profile:"parabolic",
+                                        e_l:0, e_m:200, e_r:0,
+                                        tn_l:0, td_l:16, tn_m:0, td_m:16, tn_r:0, td_r:16,
+                                        bn_l:0, bd_l:16, bn_m:0, bd_m:20, bn_r:0, bd_r:16,
+                                        st_d:10, st_sl:200, st_sm:300, st_sr:200
+                                    };
+                                }
 
                                 // Flush current in-memory state to hidden inputs right before POST
                                 document.querySelector("form").addEventListener("submit", () => {
@@ -168,6 +188,21 @@ def setup_prestress_beam_routes(app):
                                     document.querySelectorAll(".ld-dl"  ).forEach(el => { let i=parseInt(el.dataset.idx); if(loadsData[i]) loadsData[i].dl   = parseFloat(el.value)||0; });
                                     document.querySelectorAll(".ld-sdl" ).forEach(el => { let i=parseInt(el.dataset.idx); if(loadsData[i]) loadsData[i].sdl  = parseFloat(el.value)||0; });
                                     document.querySelectorAll(".ld-ll"  ).forEach(el => { let i=parseInt(el.dataset.idx); if(loadsData[i]) loadsData[i].ll   = parseFloat(el.value)||0; });
+                                    // Per-span detail fields
+                                    ["e_l","e_m","e_r","tn_l","td_l","tn_m","td_m","tn_r","td_r",
+                                     "bn_l","bd_l","bn_m","bd_m","bn_r","bd_r","st_d","st_sl","st_sm","st_sr"
+                                    ].forEach(f => {
+                                        document.querySelectorAll(".sd-"+f).forEach(el => {
+                                            let i = parseInt(el.dataset.idx);
+                                            if (!spansDetailData[i]) spansDetailData[i] = defaultDetail();
+                                            spansDetailData[i][f] = parseFloat(el.value) || 0;
+                                        });
+                                    });
+                                    document.querySelectorAll(".sd-profile").forEach(el => {
+                                        let i = parseInt(el.dataset.idx);
+                                        if (!spansDetailData[i]) spansDetailData[i] = defaultDetail();
+                                        spansDetailData[i].profile = el.value;
+                                    });
                                 }
 
                                 function render() {
@@ -211,6 +246,79 @@ def setup_prestress_beam_routes(app):
                                     }
                                     supportsHtml += "</tbody></table>";
                                     document.getElementById("supports_container").innerHTML = supportsHtml;
+
+                                    // ── Per-span detail table ──
+                                    let dtHtml = `<div style="overflow-x:auto;margin-bottom:16px"><table style="border-collapse:collapse;white-space:nowrap;font-size:12px;">
+                                        <thead>
+                                        <tr style="background:#f1f5f9;">
+                                            <th rowspan="2" style="padding:6px 8px;text-align:center;border:1px solid #d1d5db;">#</th>
+                                            <th rowspan="2" style="padding:6px 8px;text-align:center;border:1px solid #d1d5db;">Tendon Profile</th>
+                                            <th colspan="3" style="padding:4px 8px;text-align:center;border:1px solid #d1d5db;border-bottom:none;">Eccentricity (mm)</th>
+                                            <th colspan="6" style="padding:4px 8px;text-align:center;border:1px solid #d1d5db;border-bottom:none;">Top Reinforcement (n bars × dia mm)</th>
+                                            <th colspan="6" style="padding:4px 8px;text-align:center;border:1px solid #d1d5db;border-bottom:none;">Bottom Reinforcement (n bars × dia mm)</th>
+                                            <th colspan="4" style="padding:4px 8px;text-align:center;border:1px solid #d1d5db;border-bottom:none;">Stirrups (dia mm @ spacing mm)</th>
+                                        </tr>
+                                        <tr style="background:#f8fafc;font-size:11px;">
+                                            <th style="padding:4px 6px;border:1px solid #d1d5db;">Left</th>
+                                            <th style="padding:4px 6px;border:1px solid #d1d5db;">Mid</th>
+                                            <th style="padding:4px 6px;border:1px solid #d1d5db;">Right</th>
+                                            <th style="padding:4px 6px;border:1px solid #d1d5db;">n_L</th><th style="padding:4px 6px;border:1px solid #d1d5db;">φ_L</th>
+                                            <th style="padding:4px 6px;border:1px solid #d1d5db;">n_M</th><th style="padding:4px 6px;border:1px solid #d1d5db;">φ_M</th>
+                                            <th style="padding:4px 6px;border:1px solid #d1d5db;">n_R</th><th style="padding:4px 6px;border:1px solid #d1d5db;">φ_R</th>
+                                            <th style="padding:4px 6px;border:1px solid #d1d5db;">n_L</th><th style="padding:4px 6px;border:1px solid #d1d5db;">φ_L</th>
+                                            <th style="padding:4px 6px;border:1px solid #d1d5db;">n_M</th><th style="padding:4px 6px;border:1px solid #d1d5db;">φ_M</th>
+                                            <th style="padding:4px 6px;border:1px solid #d1d5db;">n_R</th><th style="padding:4px 6px;border:1px solid #d1d5db;">φ_R</th>
+                                            <th style="padding:4px 6px;border:1px solid #d1d5db;">φ</th>
+                                            <th style="padding:4px 6px;border:1px solid #d1d5db;">s_L</th>
+                                            <th style="padding:4px 6px;border:1px solid #d1d5db;">s_M</th>
+                                            <th style="padding:4px 6px;border:1px solid #d1d5db;">s_R</th>
+                                        </tr>
+                                        </thead><tbody>`;
+                                    for(let i=0; i<n; i++) {
+                                        let d = spansDetailData[i] || {};
+                                        let pf  = d.profile || "parabolic";
+                                        let el_ = d.e_l  ?? 0,   em = d.e_m  ?? 200, er = d.e_r  ?? 0;
+                                        let tnl = d.tn_l ?? 0,   tdl = d.td_l ?? 16;
+                                        let tnm = d.tn_m ?? 0,   tdm = d.td_m ?? 16;
+                                        let tnr = d.tn_r ?? 0,   tdr = d.td_r ?? 16;
+                                        let bnl = d.bn_l ?? 0,   bdl = d.bd_l ?? 16;
+                                        let bnm = d.bn_m ?? 0,   bdm = d.bd_m ?? 20;
+                                        let bnr = d.bn_r ?? 0,   bdr = d.bd_r ?? 16;
+                                        let std_ = d.st_d ?? 10, stsl = d.st_sl ?? 200, stsm = d.st_sm ?? 300, stsr = d.st_sr ?? 200;
+                                        let inp = (cls,val,isInt) => `<input type="number" class="${cls}" data-idx="${i}" value="${val}" style="width:68px;font-size:12px;" oninput="_psDtlField('${cls.replace("sd-","")}',${i},this,${isInt?'true':'false'})" step="${isInt?'1':'any'}" min="0">`;
+                                        dtHtml += `<tr style="border-bottom:1px solid #eee;">
+                                            <td style="padding:6px 8px;text-align:center;border:1px solid #e2e8f0;font-weight:600;">${i+1}</td>
+                                            <td style="padding:4px 6px;border:1px solid #e2e8f0;">
+                                                <select class="sd-profile" data-idx="${i}" style="width:120px;font-size:12px;" onchange="_psDtlField('profile',${i},this,false,true)">
+                                                    <option value="straight"       ${pf==="straight"       ?"selected":""}>Straight</option>
+                                                    <option value="parabolic"      ${pf==="parabolic"      ?"selected":""}>Parabolic</option>
+                                                    <option value="harped"         ${pf==="harped"         ?"selected":""}>Harped</option>
+                                                    <option value="multiple_harped"${pf==="multiple_harped"?"selected":""}>Multi-Harped</option>
+                                                </select>
+                                            </td>
+                                            <td style="padding:4px 6px;border:1px solid #e2e8f0;">${inp("sd-e_l",  el_,  false)}</td>
+                                            <td style="padding:4px 6px;border:1px solid #e2e8f0;">${inp("sd-e_m",  em,   false)}</td>
+                                            <td style="padding:4px 6px;border:1px solid #e2e8f0;">${inp("sd-e_r",  er,   false)}</td>
+                                            <td style="padding:4px 6px;border:1px solid #e2e8f0;">${inp("sd-tn_l", tnl,  true )}</td>
+                                            <td style="padding:4px 6px;border:1px solid #e2e8f0;">${inp("sd-td_l", tdl,  false)}</td>
+                                            <td style="padding:4px 6px;border:1px solid #e2e8f0;">${inp("sd-tn_m", tnm,  true )}</td>
+                                            <td style="padding:4px 6px;border:1px solid #e2e8f0;">${inp("sd-td_m", tdm,  false)}</td>
+                                            <td style="padding:4px 6px;border:1px solid #e2e8f0;">${inp("sd-tn_r", tnr,  true )}</td>
+                                            <td style="padding:4px 6px;border:1px solid #e2e8f0;">${inp("sd-td_r", tdr,  false)}</td>
+                                            <td style="padding:4px 6px;border:1px solid #e2e8f0;">${inp("sd-bn_l", bnl,  true )}</td>
+                                            <td style="padding:4px 6px;border:1px solid #e2e8f0;">${inp("sd-bd_l", bdl,  false)}</td>
+                                            <td style="padding:4px 6px;border:1px solid #e2e8f0;">${inp("sd-bn_m", bnm,  true )}</td>
+                                            <td style="padding:4px 6px;border:1px solid #e2e8f0;">${inp("sd-bd_m", bdm,  false)}</td>
+                                            <td style="padding:4px 6px;border:1px solid #e2e8f0;">${inp("sd-bn_r", bnr,  true )}</td>
+                                            <td style="padding:4px 6px;border:1px solid #e2e8f0;">${inp("sd-bd_r", bdr,  false)}</td>
+                                            <td style="padding:4px 6px;border:1px solid #e2e8f0;">${inp("sd-st_d", std_, false)}</td>
+                                            <td style="padding:4px 6px;border:1px solid #e2e8f0;">${inp("sd-st_sl",stsl, false)}</td>
+                                            <td style="padding:4px 6px;border:1px solid #e2e8f0;">${inp("sd-st_sm",stsm, false)}</td>
+                                            <td style="padding:4px 6px;border:1px solid #e2e8f0;">${inp("sd-st_sr",stsr, false)}</td>
+                                        </tr>`;
+                                    }
+                                    dtHtml += "</tbody></table></div>";
+                                    document.getElementById("span_detail_container").innerHTML = dtHtml;
 
                                     // ── Loads table ──
                                     let loadsHtml = `<table style="width:100%;border-collapse:collapse;margin-top:8px">
@@ -304,50 +412,49 @@ def setup_prestress_beam_routes(app):
                                         cl += L*scale;
                                     }
 
-                                    // Draw Tendon
-                                    let profile = document.querySelector("select[name='tendon_profile']")?.value || "straight";
-                                    let e = parseFloat(document.querySelector("input[name='eccentricity']")?.value || "200");
+                                    // Draw Tendon (per span, using spansDetailData)
                                     let h = parseFloat(document.querySelector("input[name='height']")?.value || "600");
-                                    // Beam rectangle spans y=80..120 (40px). Centroid at y=100.
-                                    // Scale eccentricity (positive=below centroid) to canvas pixels.
-                                    const beamPx = 40; // px height of drawn beam rect
-                                    const ePx = Math.min((e / Math.max(1, h)) * beamPx, beamPx * 0.48);
-                                    const yEnd = 100 + ePx;       // tendon y at ends (eccentricity below centroid)
-                                    const yMid = 100 + ePx;       // for straight/constant profiles
+                                    const beamPx = 40;
                                     ctx.strokeStyle = "#ef4444";
                                     ctx.setLineDash([5, 5]);
                                     ctx.lineWidth = 2;
                                     ctx.fillStyle = "#ef4444";
                                     cl = 20;
                                     for(let i=0; i<n; i++) {
-                                        let L = spansData[i]?.length || 10000;
-                                        let x0 = cl, x1 = cl + L*scale;
+                                        let L    = spansData[i]?.length || 10000;
+                                        let x0   = cl, x1 = cl + L*scale;
+                                        let sd   = spansDetailData[i] || {};
+                                        let profile = sd.profile || "parabolic";
+                                        let e_l  = sd.e_l ?? 0, e_m = sd.e_m ?? 200, e_r = sd.e_r ?? 0;
+                                        let ePxL = Math.min((e_l / Math.max(1,h)) * beamPx, beamPx * 0.48);
+                                        let ePxM = Math.min((e_m / Math.max(1,h)) * beamPx, beamPx * 0.48);
+                                        let ePxR = Math.min((e_r / Math.max(1,h)) * beamPx, beamPx * 0.48);
+                                        let yL   = 100 + ePxL;
+                                        let yM   = 100 + ePxM;
+                                        let yR   = 100 + ePxR;
                                         ctx.beginPath();
-                                        ctx.moveTo(x0, yEnd);
+                                        ctx.moveTo(x0, yL);
                                         if(profile === "straight") {
-                                            ctx.lineTo(x1, yEnd);
+                                            ctx.lineTo(x1, yR);
                                             ctx.stroke();
-                                            ctx.fillText(`e=${e}mm`, (x0+x1)/2, Math.min(yEnd + 12, 155));
+                                            ctx.fillText(`e=${e_m}mm`, (x0+x1)/2, Math.min(yM + 12, 155));
                                         } else if (profile === "harped") {
-                                            let midObj = (x0 + x1)/2;
-                                            // Harped: tendon drops from ends (at ePx) to max droop at midspan
-                                            let yHarpMid = Math.min(100 + ePx * 1.5, 118);
-                                            ctx.lineTo(midObj, yHarpMid);
-                                            ctx.lineTo(x1, yEnd);
+                                            let xMid = (x0+x1)/2;
+                                            ctx.lineTo(xMid, yM);
+                                            ctx.lineTo(x1, yR);
                                             ctx.stroke();
-                                            ctx.fillText(`Max e=${e}mm`, midObj, Math.min(yHarpMid + 12, 155));
+                                            ctx.fillText(`e=${e_m}mm`, xMid, Math.min(yM + 12, 155));
                                         } else if (profile === "multiple_harped") {
-                                            let yHarpMid = Math.min(100 + ePx * 1.5, 118);
-                                            ctx.lineTo(x0 + L*scale/3, yHarpMid);
-                                            ctx.lineTo(x0 + 2*L*scale/3, yHarpMid);
-                                            ctx.lineTo(x1, yEnd);
+                                            ctx.lineTo(x0 + L*scale/3,   yM);
+                                            ctx.lineTo(x0 + 2*L*scale/3, yM);
+                                            ctx.lineTo(x1, yR);
                                             ctx.stroke();
-                                            ctx.fillText(`e=${e}mm`, x0 + L*scale/2, Math.min(yHarpMid + 12, 155));
+                                            ctx.fillText(`e=${e_m}mm`, x0 + L*scale/2, Math.min(yM + 12, 155));
                                         } else { // Parabolic
-                                            let yParabMid = Math.min(100 + ePx * 1.6, 120);
-                                            ctx.quadraticCurveTo((x0+x1)/2, yParabMid, x1, yEnd);
+                                            let cpY = 2*yM - (yL+yR)/2;
+                                            ctx.quadraticCurveTo((x0+x1)/2, cpY, x1, yR);
                                             ctx.stroke();
-                                            ctx.fillText(`Max e=${e}mm`, (x0+x1)/2, Math.min(yParabMid + 12, 155));
+                                            ctx.fillText(`e=${e_m}mm`, (x0+x1)/2, Math.min(cpY + 12, 155));
                                         }
                                         cl = x1;
                                     }
@@ -409,6 +516,17 @@ def setup_prestress_beam_routes(app):
                                     updateInputs();
                                     render();
                                 };
+                                window._psDtlField = function(field, idx, el, asInt, isStr) {
+                                    if (!spansDetailData[idx]) spansDetailData[idx] = defaultDetail();
+                                    if (isStr)       spansDetailData[idx][field] = el.value;
+                                    else if (asInt)  spansDetailData[idx][field] = parseInt(el.value) || 0;
+                                    else             spansDetailData[idx][field] = parseFloat(el.value) || 0;
+                                    updateInputs();
+                                    // Redraw canvas when profile or eccentricity changes
+                                    if(["profile","e_l","e_m","e_r"].includes(field)) {
+                                        drawVisualization(parseInt(document.getElementById("num_spans").value)||1);
+                                    }
+                                };
 
                                 function updateInputs() {
                                     let n = parseInt(document.getElementById("num_spans").value) || 1;
@@ -416,9 +534,12 @@ def setup_prestress_beam_routes(app):
                                     spansData    = spansData.slice(0, n);
                                     while (supportsData.length < n+1) supportsData.push({type: "column/wall"});
                                     supportsData = supportsData.slice(0, n+1);
-                                    document.getElementById("spans_data").value    = JSON.stringify(spansData);
-                                    document.getElementById("supports_data").value = JSON.stringify(supportsData);
-                                    document.getElementById("loads_data").value    = JSON.stringify(loadsData);
+                                    while (spansDetailData.length < n) spansDetailData.push(defaultDetail());
+                                    spansDetailData = spansDetailData.slice(0, n);
+                                    document.getElementById("spans_data").value        = JSON.stringify(spansData);
+                                    document.getElementById("supports_data").value     = JSON.stringify(supportsData);
+                                    document.getElementById("loads_data").value        = JSON.stringify(loadsData);
+                                    document.getElementById("spans_detail_data").value = JSON.stringify(spansDetailData);
                                 }
 
                                 document.getElementById("num_spans").addEventListener("change", () => { updateInputs(); render(); });
@@ -426,9 +547,7 @@ def setup_prestress_beam_routes(app):
                                     loadsData.push({span: 1, type: "uniform", loc: 0, dl: 10, sdl: 5, ll: 15});
                                     updateInputs(); render();
                                 });
-                                // Update visualization on profile, eccentricity, or height change
-                                document.querySelector("select[name='tendon_profile']").addEventListener("change", render);
-                                document.querySelector("input[name='eccentricity']").addEventListener("input", render);
+                                // Redraw on height change (tendon depth scale)
                                 document.querySelector("input[name='height']").addEventListener("input", render);
 
                                 render();
@@ -445,13 +564,6 @@ def setup_prestress_beam_routes(app):
                                 air.Option("Post-Tensioned (Bonded)", value="posttensioned_bonded", selected=(data.method=="posttensioned_bonded")),
                                 air.Option("Post-Tensioned (Unbonded)", value="posttensioned_unbonded", selected=(data.method=="posttensioned_unbonded")),
                                 name="method"
-                            ), class_="form-group"),
-                            air.Div(air.Label("Tendon Profile"), air.Select(
-                                air.Option("Straight", value="straight", selected=(data.tendon_profile=="straight")),
-                                air.Option("Parabolic", value="parabolic", selected=(data.tendon_profile=="parabolic")),
-                                air.Option("Harped", value="harped", selected=(data.tendon_profile=="harped")),
-                                air.Option("Multiple Harped", value="multiple_harped", selected=(data.tendon_profile=="multiple_harped")),
-                                name="tendon_profile"
                             ), class_="form-group"),
                             air.Div(air.Label("Material Type"), air.Select(
                                 air.Option("ASTM A416 Strand", value="astm_a416_strand", selected=(data.material=="astm_a416_strand")),
@@ -513,7 +625,6 @@ def setup_prestress_beam_routes(app):
                                 class_="form-group"
                             ),
                             air.Div(air.Label("Number of Tendons"), air.Input(type="number", name="num_tendons", value=str(data.num_tendons), step="any", required=True), class_="form-group"),
-                            air.Div(air.Label("Eccentricity e (mm, ≤ h/2−50mm cover)"), air.Input(type="number", name="eccentricity", value=str(data.eccentricity), step="any", required=True, max=str(data.height / 2 - 50)), class_="form-group"),
                             air.Div(air.Label("Init. Jacking Force (kN/tendon) [0=auto]"), air.Input(type="number", name="jacking_force", value=str(data.jacking_force), step="any"), class_="form-group"),
                             
                             air.Div(air.Label("Unit Weight γc (kN/m³)"), air.Input(type="number", name="gamma_c", value=str(data.gamma_c), step="any", required=True), class_="form-group"),
@@ -525,9 +636,7 @@ def setup_prestress_beam_routes(app):
                             air.Div(air.Label("Friction k (1/m) [PT]"), air.Input(type="number", name="friction_k", value=str(data.friction_k), step="any"), class_="form-group"),
                             air.Div(air.Label("Time-Dependent Loss (MPa) [0=auto]"), air.Input(type="number", name="time_loss_mpa", value=str(data.time_loss_mpa), step="any"), class_="form-group"),
 
-                            air.Div(air.Label("Rebar Yield fy (MPa) [Optional]"), air.Input(type="number", name="rebar_fy", value=str(data.rebar_fy), step="any", required=True), class_="form-group"),
-                            air.Div(air.Label("Top Rebar As' (mm²) [Optional]"), air.Input(type="number", name="rebar_as_top", value=str(data.rebar_as_top), step="any"), class_="form-group"),
-                            air.Div(air.Label("Bot Rebar As (mm²) [Optional]"), air.Input(type="number", name="rebar_as_bot", value=str(data.rebar_as_bot), step="any"), class_="form-group"),
+                            air.Div(air.Label("Rebar Yield fy (MPa)"), air.Input(type="number", name="rebar_fy", value=str(data.rebar_fy), step="any", required=True), class_="form-group"),
                             air.Div(air.Label("Long-Term Multiplier (ACI T.24.2.4.1.3)"), air.Select(
                                 air.Option("2.0 — 5+ years",   value="2.0", selected=(data.long_term_multiplier == 2.0)),
                                 air.Option("1.4 — 12 months",  value="1.4", selected=(data.long_term_multiplier == 1.4)),
@@ -587,7 +696,17 @@ def setup_prestress_beam_routes(app):
         _lookup_failed = not prop
         if _lookup_failed:
             prop = {'diameter': float(data.strand_dia) if data.strand_dia.replace('.','',1).isdigit() else 12.7, 'area': 98.7, 'fpu': 1860, 'fpy': 1674, 'description': 'Custom (A416 12.70mm fallback)'}
-        
+
+        # ── Parse per-span detail data ──────────────────────────────────────
+        import math as _math
+        try:
+            spans_detail_json = json.loads(data.spans_detail_data)
+        except Exception:
+            spans_detail_json = []
+
+        def _rebar_area(n_bars, dia_mm):
+            return int(n_bars) * _math.pi / 4.0 * float(dia_mm) ** 2 if float(dia_mm) > 0 else 0.0
+
         tendon = PrestressTendon(
             material_type=mat_type,
             diameter=prop['diameter'],
@@ -595,7 +714,7 @@ def setup_prestress_beam_routes(app):
             fpu=prop['fpu'],
             fpy=prop['fpy'],
             number_of_tendons=data.num_tendons,
-            eccentricity=data.eccentricity,
+            eccentricity=float((spans_detail_json[0] if spans_detail_json else {}).get('e_m', 200.0)),
             slip=data.slip,
             friction_mu=data.friction_mu,
             friction_k=data.friction_k,
@@ -672,6 +791,24 @@ def setup_prestress_beam_routes(app):
         if len(supports_types) < num_spans + 1:
             supports_types += ['column/wall'] * (num_spans + 1 - len(supports_types))
 
+        # Pad spans_detail_json to match num_spans
+        while len(spans_detail_json) < num_spans:
+            spans_detail_json.append({})
+
+        # Derive global tendon profile (first span's setting)
+        global_profile = spans_detail_json[0].get('profile', 'parabolic')
+
+        # Derive global rebar areas per span (midspan controls for analysis)
+        # Use the critical (maximum) midspan bottom rebar across all spans for the global analysis pass
+        global_rebar_as_bot = max(
+            (_rebar_area(sd.get('bn_m', 0), sd.get('bd_m', 20)) for sd in spans_detail_json),
+            default=0.0
+        )
+        global_rebar_as_top = max(
+            (_rebar_area(sd.get('tn_m', 0), sd.get('td_m', 16)) for sd in spans_detail_json),
+            default=0.0
+        )
+
         results = designer.run_continuous_analysis(
             spans=spans,
             span_loads=span_loads,
@@ -681,9 +818,9 @@ def setup_prestress_beam_routes(app):
             fci_prime=data.fci_prime,
             method=method_type,
             member_type=PrestressMemberType.BEAM,
-            tendon_profile=data.tendon_profile,
-            rebar_as_bot=data.rebar_as_bot,
-            rebar_as_top=data.rebar_as_top,
+            tendon_profile=global_profile,
+            rebar_as_bot=global_rebar_as_bot,
+            rebar_as_top=global_rebar_as_top,
             rebar_fy=data.rebar_fy,
             long_term_multiplier=data.long_term_multiplier,
             deflection_limit=data.deflection_limit,
@@ -691,6 +828,64 @@ def setup_prestress_beam_routes(app):
 
         
         result_elements = []
+
+        # ── Stress-check helper ─────────────────────────────────────────────
+        import math as _sm
+        _fci = data.fci_prime
+        _fc  = data.fc_prime
+        _TH_STYLE = "padding:5px 8px;text-align:center;border-bottom:2px solid #94a3b8;font-size:12px;"
+        _TH_L     = "padding:5px 8px;text-align:left;border-bottom:2px solid #94a3b8;font-size:12px;"
+
+        def _sdcr(f, is_init, is_end_loc):
+            """Return (dcr, limit_str). f: stress MPa (+T / −C)."""
+            if is_init:
+                lim_c = -(_fci * (0.70 if is_end_loc else 0.60))
+                lim_t = +(_sm.sqrt(_fci) * (0.50 if is_end_loc else 0.25))
+            else:
+                lim_c = -(_fc * 0.45)   # sustained compression
+                lim_t = +(_sm.sqrt(_fc) * 0.62)  # Class U
+            if f < 0:
+                dcr = abs(f) / abs(lim_c) if lim_c != 0 else 0.0
+                return dcr, f"{lim_c:.2f}"
+            else:
+                dcr = f / lim_t if lim_t > 0 else 0.0
+                return dcr, f"+{lim_t:.2f}"
+
+        def _stress_row(label, st, sb, is_init, is_end_loc):
+            dcr_t, lim_t = _sdcr(st, is_init, is_end_loc)
+            dcr_b, lim_b = _sdcr(sb, is_init, is_end_loc)
+            ok = max(dcr_t, dcr_b) <= 1.0
+            def _cs(d): return f"padding:5px 8px;text-align:center;font-weight:{'600' if d>1.0 else 'normal'};color:{'#dc2626' if d>1.0 else '#16a34a'};"
+            return air.Tr(
+                air.Td(label,                 style="padding:5px 8px;font-size:12px;"),
+                air.Td(f"{st:+.2f}",          style="padding:5px 8px;text-align:center;font-size:12px;"),
+                air.Td(lim_t,                 style="padding:5px 8px;text-align:center;font-size:11px;color:#6b7280;"),
+                air.Td(f"{dcr_t:.2f}",        style=_cs(dcr_t) + "font-size:12px;"),
+                air.Td(f"{sb:+.2f}",          style="padding:5px 8px;text-align:center;font-size:12px;"),
+                air.Td(lim_b,                 style="padding:5px 8px;text-align:center;font-size:11px;color:#6b7280;"),
+                air.Td(f"{dcr_b:.2f}",        style=_cs(dcr_b) + "font-size:12px;"),
+                air.Td("✓ OK" if ok else "✗ NG", style=f"padding:5px 8px;text-align:center;font-weight:600;font-size:12px;color:{'#16a34a' if ok else '#dc2626'};"),
+                style="border-bottom:1px solid #e2e8f0;"
+            )
+
+        def _stress_thead():
+            return air.Thead(
+                air.Tr(
+                    air.Th("Location",   style=_TH_L,    rowspan="2"),
+                    air.Th("Top Fiber",  style=_TH_STYLE, colspan="3"),
+                    air.Th("Bot Fiber",  style=_TH_STYLE, colspan="3"),
+                    air.Th("Status",     style=_TH_STYLE, rowspan="2"),
+                ),
+                air.Tr(
+                    air.Th("f (MPa)",    style=_TH_STYLE),
+                    air.Th("Limit",      style=_TH_STYLE),
+                    air.Th("DCR",        style=_TH_STYLE),
+                    air.Th("f (MPa)",    style=_TH_STYLE),
+                    air.Th("Limit",      style=_TH_STYLE),
+                    air.Th("DCR",        style=_TH_STYLE),
+                ),
+                style="background:#f1f5f9;"
+            )
 
         # ── Buttons (no-print) ──────────────────────────────────────────────
         result_elements.append(air.Div(
@@ -726,6 +921,30 @@ def setup_prestress_beam_routes(app):
         ))
 
         # ── Input Parameters ───────────────────────────────────────────────
+        # Build per-span tendon & reinforcement summary rows
+        _span_detail_rows = []
+        for _si, _sd in enumerate(spans_detail_json):
+            _pf_label = _sd.get('profile', 'parabolic').replace('_',' ').title()
+            _e_l, _e_m, _e_r = _sd.get('e_l',0), _sd.get('e_m',200), _sd.get('e_r',0)
+            _tnl,_tdl = _sd.get('tn_l',0), _sd.get('td_l',16)
+            _tnm,_tdm = _sd.get('tn_m',0), _sd.get('td_m',16)
+            _tnr,_tdr = _sd.get('tn_r',0), _sd.get('td_r',16)
+            _bnl,_bdl = _sd.get('bn_l',0), _sd.get('bd_l',16)
+            _bnm,_bdm = _sd.get('bn_m',0), _sd.get('bd_m',20)
+            _bnr,_bdr = _sd.get('bn_r',0), _sd.get('bd_r',16)
+            _std, _ssl, _ssm, _ssr = _sd.get('st_d',10), _sd.get('st_sl',200), _sd.get('st_sm',300), _sd.get('st_sr',200)
+            _span_detail_rows.append(air.Li(
+                air.Strong(f"Span {_si+1}: "),
+                air.Span(
+                    f"Profile: {_pf_label}  |  "
+                    f"e = {_e_l:.0f}/{_e_m:.0f}/{_e_r:.0f} mm (L/M/R)  |  "
+                    f"Top: {_tnl:.0f}\u00d7{_tdl:.0f}/{_tnm:.0f}\u00d7{_tdm:.0f}/{_tnr:.0f}\u00d7{_tdr:.0f} mm  |  "
+                    f"Bot: {_bnl:.0f}\u00d7{_bdl:.0f}/{_bnm:.0f}\u00d7{_bdm:.0f}/{_bnr:.0f}\u00d7{_bdr:.0f} mm  |  "
+                    f"Stir: \u03c6{_std:.0f}@{_ssl:.0f}/{_ssm:.0f}/{_ssr:.0f} mm",
+                    class_="data-value"
+                )
+            ))
+
         result_elements.append(air.Div(
             air.H2("Input Parameters"),
             air.Div(
@@ -748,16 +967,18 @@ def setup_prestress_beam_routes(app):
                         air.Li(air.Strong("Concrete: "), air.Span(f"f\u2019c = {data.fc_prime} MPa, f\u2019ci = {data.fci_prime} MPa, \u03b3c = {data.gamma_c} kN/m\u00b3", class_="data-value")),
                         air.Li(air.Strong("Method: "), air.Span(data.method.replace('_', ' ').title(), class_="data-value")),
                         air.Li(air.Strong("Material / Size: "), air.Span(f"{data.material.replace('_', ' ').upper()} \u2014 {data.strand_dia} mm", class_="data-value")),
-                        air.Li(air.Strong("Tendons: "), air.Span(f"{data.num_tendons} \u00d7 {data.tendon_profile.replace('_', ' ').title()}, e = {data.eccentricity} mm", class_="data-value")),
+                        air.Li(air.Strong("Tendons: "), air.Span(f"{data.num_tendons} tendon(s)", class_="data-value")),
                         air.Li(air.Strong("Jacking force: "), air.Span(f"{data.jacking_force:.1f} kN/tendon" + (" (auto)" if data.jacking_force == 0 else ""), class_="data-value")),
                         air.Li(air.Strong("Losses: "), air.Span(f"slip = {data.slip} mm, \u03bc = {data.friction_mu}, k = {data.friction_k} /m, time-dep. = {data.time_loss_mpa} MPa" + (" (auto)" if data.time_loss_mpa == 0 else ""), class_="data-value")),
-                        air.Li(air.Strong("Passive rebar: "), air.Span(f"fy = {data.rebar_fy} MPa, As\u2019 = {data.rebar_as_top:.0f} mm\u00b2, As = {data.rebar_as_bot:.0f} mm\u00b2", class_="data-value")),
+                        air.Li(air.Strong("Rebar fy: "), air.Span(f"{data.rebar_fy} MPa", class_="data-value")),
                         air.Li(air.Strong("Deflection: "), air.Span(f"\u03bb\u0394 = {data.long_term_multiplier}, limit = L/{data.deflection_limit:.0f}", class_="data-value")),
                     ),
                     class_="section-box"
                 ),
                 class_="grid-2"
             ),
+            air.H3("Per-Span Tendon Profile & Reinforcement", style="font-size: 16px; margin-top: 12px; margin-bottom: 6px; border:none;"),
+            air.Ul(*_span_detail_rows),
             style="margin-bottom: 24px; padding-bottom: 20px; border-bottom: 2px dashed #e5e7eb;"
         ))
 
@@ -1006,43 +1227,87 @@ def setup_prestress_beam_routes(app):
                 air.H2(f"Span {res.span_index + 1} Capacity and Checks", style="color: #2563eb;"),
                 air.Canvas(id=canvas_id, width=1000, height=180, style="width:100%; border: 1px solid #e2e8f0; border-radius: 4px; margin-bottom: 20px; background: #f8fafc;"),
                 air.Script(res_vis_script),
-                air.H4("Capacities & DCR (Left / Mid / Right)"),
-                air.Ul(
-                    air.Li(air.Strong("Flexure (φMn): "), air.Span(f"{res.moment_capacity:.1f} kN·m | DCR: {res.dcr_flexure_left:.2f} / {res.dcr_flexure_mid:.2f} / {res.dcr_flexure_right:.2f}", class_="data-value")),
-                    air.Li(air.Strong("Shear (φVc): "), air.Span(f"{res.phi_Vn:.1f} kN | DCR: {res.dcr_shear_left:.2f} / {res.dcr_shear_mid:.2f} / {res.dcr_shear_right:.2f}", class_="data-value")),
-                    air.Li(air.Strong("Torsion (φTn): "), air.Span(f"{res.phi_Tn:.1f} kN·m | DCR: {res.dcr_torsion_left:.2f} / {res.dcr_torsion_mid:.2f} / {res.dcr_torsion_right:.2f}", class_="data-value")),
-                    air.Li(air.Strong("Combined Shear-Torsion: "), air.Span(f"DCR: {res.dcr_comb_left:.2f} / {res.dcr_comb_mid:.2f} / {res.dcr_comb_right:.2f}", class_="data-value")),
-                    air.Li(air.Strong("Deflection (midspan) Allowable: "), air.Span(f"{res.allowable_deflection:.1f} mm | DCR (midspan): {res.dcr_deflect_mid:.2f}", class_="data-value")),
-                    air.Li(air.Strong("Overall DCR"), air.Span(f"{res.utilization_ratio:.2f} {'≤' if res.utilization_ratio <= 1.0 else '>'} 1.00", class_=f"status-badge {'pass' if res.utilization_ratio <= 1.0 else 'fail'}")),
+                air.H4("Strength & Serviceability DCR (Left / Mid / Right)"),
+                air.Table(
+                    air.Thead(air.Tr(
+                        air.Th("Check",    style=_TH_L),
+                        air.Th("Demand",   style=_TH_STYLE),
+                        air.Th("Capacity", style=_TH_STYLE),
+                        air.Th("DCR L",    style=_TH_STYLE),
+                        air.Th("DCR M",    style=_TH_STYLE),
+                        air.Th("DCR R",    style=_TH_STYLE),
+                        air.Th("Status",   style=_TH_STYLE),
+                    ), style="background:#f1f5f9;"),
+                    air.Tbody(
+                        *[air.Tr(
+                            air.Td(lbl,  style="padding:5px 8px;font-size:12px;"),
+                            air.Td(dem,  style="padding:5px 8px;text-align:center;font-size:12px;"),
+                            air.Td(cap,  style="padding:5px 8px;text-align:center;font-size:12px;"),
+                            air.Td(f"{dl:.2f}", style=f"padding:5px 8px;text-align:center;font-size:12px;font-weight:{'600' if dl>1.0 else 'normal'};color:{'#dc2626' if dl>1.0 else '#16a34a'};"),
+                            air.Td(f"{dm:.2f}", style=f"padding:5px 8px;text-align:center;font-size:12px;font-weight:{'600' if dm>1.0 else 'normal'};color:{'#dc2626' if dm>1.0 else '#16a34a'};"),
+                            air.Td(f"{dr:.2f}", style=f"padding:5px 8px;text-align:center;font-size:12px;font-weight:{'600' if dr>1.0 else 'normal'};color:{'#dc2626' if dr>1.0 else '#16a34a'};"),
+                            air.Td("✓ OK" if max(dl,dm,dr)<=1.0 else "✗ NG", style=f"padding:5px 8px;text-align:center;font-weight:600;font-size:12px;color:{'#16a34a' if max(dl,dm,dr)<=1.0 else '#dc2626'};"),
+                            style="border-bottom:1px solid #e2e8f0;"
+                        ) for lbl, dem, cap, dl, dm, dr in [
+                            ("Flexure (φMn)",
+                             f"Mu = {max(abs(res.Mu_left),abs(res.Mu_mid),abs(res.Mu_right)):.1f} kN·m",
+                             f"φMn = {res.moment_capacity:.1f} kN·m",
+                             res.dcr_flexure_left, res.dcr_flexure_mid, res.dcr_flexure_right),
+                            ("Shear (φVc)",
+                             f"Vu = {res.Vu:.1f} kN",
+                             f"φVc = {res.phi_Vn:.1f} kN",
+                             res.dcr_shear_left, res.dcr_shear_mid, res.dcr_shear_right),
+                            ("Torsion (φTn)",
+                             f"Tu = {res.Tu:.1f} kN·m",
+                             f"φTn = {res.phi_Tn:.1f} kN·m",
+                             res.dcr_torsion_left, res.dcr_torsion_mid, res.dcr_torsion_right),
+                            ("Combined V+T",
+                             "—", "≤ 1.0",
+                             res.dcr_comb_left, res.dcr_comb_mid, res.dcr_comb_right),
+                            ("Deflection",
+                             f"Δ = {res.deflection_final:.1f} mm",
+                             f"Δ_allow = {res.allowable_deflection:.1f} mm",
+                             res.dcr_deflect_left, res.dcr_deflect_mid, res.dcr_deflect_right),
+                        ]],
+                        air.Tr(
+                            air.Td("Overall DCR", style="padding:5px 8px;font-size:12px;font-weight:700;"),
+                            air.Td("—", style="padding:5px 8px;"),
+                            air.Td("—", style="padding:5px 8px;"),
+                            air.Td("—", style="padding:5px 8px;"),
+                            air.Td(f"{res.utilization_ratio:.2f}", style=f"padding:5px 8px;text-align:center;font-weight:700;color:{'#16a34a' if res.utilization_ratio<=1.0 else '#dc2626'};"),
+                            air.Td("—", style="padding:5px 8px;"),
+                            air.Td("✓ PASS" if res.utilization_ratio<=1.0 else "✗ FAIL",
+                                   style=f"padding:5px 8px;text-align:center;font-weight:700;color:{'#16a34a' if res.utilization_ratio<=1.0 else '#dc2626'};"),
+                            style="background:#f8fafc;border-top:2px solid #94a3b8;"
+                        ),
+                    ),
+                    style="width:100%;border-collapse:collapse;margin-bottom:16px;"
                 ),
-                air.H4("Stresses (Left / Mid / Right)"),
-                air.Ul(
-                    air.Li(air.Strong("Initial Top: "), air.Span(f"{res.left_st_i:.2f} / {res.mid_st_i:.2f} / {res.right_st_i:.2f} MPa", class_="data-value")),
-                    air.Li(air.Strong("Initial Bot: "), air.Span(f"{res.left_sb_i:.2f} / {res.mid_sb_i:.2f} / {res.right_sb_i:.2f} MPa", class_="data-value")),
-                    air.Li(air.Strong("Init. Comp. Limit (C): "), air.Span(
-                        f"−{0.70*data.fci_prime:.2f} MPa (ends)  /  −{0.60*data.fci_prime:.2f} MPa (other)  "
-                        f"[ACI T.24.5.3.1 & 24.5.3.2]",
-                        class_="data-value", style="color:#7c3aed"
-                    )),
-                    air.Li(air.Strong("Init. Tension Limit (T): "), air.Span(
-                        f"+{0.50*(data.fci_prime**0.5):.2f} MPa (ends)  /  +{0.25*(data.fci_prime**0.5):.2f} MPa (other)  "
-                        f"[ACI T.24.5.3.1 & 24.5.3.2]",
-                        class_="data-value", style="color:#7c3aed"
-                    )),
-                    air.Li(air.Strong("Service Top: "), air.Span(f"{res.left_st_s:.2f} / {res.mid_st_s:.2f} / {res.right_st_s:.2f} MPa", class_="data-value")),
-                    air.Li(air.Strong("Service Bot: "), air.Span(f"{res.left_sb_s:.2f} / {res.mid_sb_s:.2f} / {res.right_sb_s:.2f} MPa", class_="data-value")),
-                    air.Li(air.Strong("Svc. Comp. Limit (C): "), air.Span(
-                        f"−{0.45*data.fc_prime:.2f} MPa (sustained)  /  −{0.60*data.fc_prime:.2f} MPa (total)  "
-                        f"[ACI T.24.5.4.1]",
-                        class_="data-value", style="color:#1d4ed8"
-                    )),
-                    air.Li(air.Strong("Svc. Tension Limit (T): "), air.Span(
-                        f"Class U: +{0.62*(data.fc_prime**0.5):.2f} MPa  /  "
-                        f"Class T: +{1.0*(data.fc_prime**0.5):.2f} MPa  "
-                        f"[ACI T.24.5.4.1]",
-                        class_="data-value", style="color:#1d4ed8"
-                    )),
-                    air.Li(air.Strong("Cracking Moment (Mcr): "), air.Span(f"{res.cracking_moment:.1f} kN·m", class_="data-value")),
+                air.H4(f"Elastic Stress Checks — Initial Transfer  [ACI Table 24.5.3.1]  (fci = {_fci:.1f} MPa)"),
+                air.P(f"Limits: Comp. = −{0.60*_fci:.2f} MPa (other) / −{0.70*_fci:.2f} MPa (ends);  "
+                      f"Tens. = +{0.25*_fci**0.5:.2f} MPa (other) / +{0.50*_fci**0.5:.2f} MPa (ends)",
+                      style="font-size:12px;color:#6b7280;margin-bottom:4px;"),
+                air.Table(
+                    _stress_thead(),
+                    air.Tbody(
+                        _stress_row("Left Support",  res.left_st_i,  res.left_sb_i,  True, res.span_index == 0),
+                        _stress_row("Midspan",       res.mid_st_i,   res.mid_sb_i,   True, False),
+                        _stress_row("Right Support", res.right_st_i, res.right_sb_i, True, res.span_index == num_spans - 1),
+                    ),
+                    style="width:100%;border-collapse:collapse;margin-bottom:16px;"
+                ),
+                air.H4(f"Elastic Stress Checks — Service  [ACI Table 24.5.4.1]  (fc = {_fc:.1f} MPa)"),
+                air.P(f"Limits: Comp. = −{0.45*_fc:.2f} MPa (sustained) / −{0.60*_fc:.2f} MPa (total);  "
+                      f"Tens. (Class U) = +{0.62*_fc**0.5:.2f} MPa",
+                      style="font-size:12px;color:#6b7280;margin-bottom:4px;"),
+                air.Table(
+                    _stress_thead(),
+                    air.Tbody(
+                        _stress_row("Left Support",  res.left_st_s,  res.left_sb_s,  False, res.span_index == 0),
+                        _stress_row("Midspan",       res.mid_st_s,   res.mid_sb_s,   False, False),
+                        _stress_row("Right Support", res.right_st_s, res.right_sb_s, False, res.span_index == num_spans - 1),
+                    ),
+                    style="width:100%;border-collapse:collapse;margin-bottom:16px;"
                 ),
                 air.H4("Design Variables"),
                 air.Ul(
@@ -1052,6 +1317,7 @@ def setup_prestress_beam_routes(app):
                     air.Li(air.Strong("Effective Prestress (fpe): "), air.Span(f"{res.fpe:.1f} MPa", class_="data-value")),
                     air.Li(air.Strong("Stress at Flexural Strength (fps): "), air.Span(f"{res.fps:.1f} MPa", class_="data-value")),
                     air.Li(air.Strong("Total Loss Percentage: "), air.Span(f"{res.loss_total_percentage:.1f}%", class_="data-value")),
+                    air.Li(air.Strong("Cracking Moment (Mcr): "), air.Span(f"{res.cracking_moment:.1f} kN·m", class_="data-value")),
                     air.Li(air.Strong("Initial Deflection: "), air.Span(f"{res.deflection_initial:.1f} mm", class_="data-value")),
                     air.Li(air.Strong("Final Deflection: "), air.Span(f"{res.deflection_final:.1f} mm", class_="data-value")),
                 ),
@@ -1181,6 +1447,13 @@ def setup_prestress_beam_routes(app):
         }.get(mat_type, "Prestressing Material")
 
         # ── Step 3: Design eccentricity per span ──────────────────────────
+        # Derive auto-design profile from spans_detail_data (use first span's or default 'parabolic')
+        try:
+            _auto_spans_detail = json.loads(data.spans_detail_data)
+        except Exception:
+            _auto_spans_detail = []
+        _auto_profile = (_auto_spans_detail[0].get('profile', 'parabolic') if _auto_spans_detail else 'parabolic')
+
         COVER = 50.0  # mm (clear cover to tendon centroid)
         fc = data.fc_prime
         f_ts = 0.62 * (fc ** 0.5)  # Class U tension limit (MPa)
@@ -1202,7 +1475,7 @@ def setup_prestress_beam_routes(app):
             e_left  = _e_at_support(service_moments[i][0], is_left_end)
             e_right = _e_at_support(service_moments[i][2], is_right_end)
 
-            if data.tendon_profile == 'straight':
+            if _auto_profile == 'straight':
                 e_left = e_right = e_mid   # constant for straight tendons
 
             span_design.append({'e_left': e_left, 'e_mid': e_mid, 'e_right': e_right})
@@ -1272,7 +1545,7 @@ def setup_prestress_beam_routes(app):
             supports_types=supports_types, tendon=tendon,
             mat_props=mat_props, fci_prime=data.fci_prime,
             method=method_type, member_type=PrestressMemberType.BEAM,
-            tendon_profile=data.tendon_profile,
+            tendon_profile=_auto_profile,
             rebar_as_bot=0.0, rebar_as_top=0.0, rebar_fy=data.rebar_fy,
             long_term_multiplier=data.long_term_multiplier,
             deflection_limit=data.deflection_limit,
@@ -1386,23 +1659,49 @@ def setup_prestress_beam_routes(app):
             'harped':         "Harped – linear from end to harp point",
             'multiple_harped':"Multiple harped",
         }
-        profile_note = profile_note_map.get(data.tendon_profile, data.tendon_profile)
+        profile_note = profile_note_map.get(_auto_profile, _auto_profile)
 
+        # Compute elastically required eccentricities: e_req = M_service / P_e - kb
+        # where kb = I/(A·yb) is the bottom kern distance (no tension at bottom fiber condition).
+        # Interior supports get a negative e (tendon above centroid) from hogging moments.
+        _COVER_ECC   = 50.0
+        _A_ps_eff    = selected_prop['area'] * selected_n  # mm²
         ecc_rows = []
-        for i, sdd in enumerate(span_design):
+        for i, res in enumerate(analysis_results):
+            _span = spans[i]
+            _A_g  = _span.area
+            _I_g  = _span.moment_of_inertia
+            _yb   = _span.yb
+            _yt   = _span.yt
+            _kb   = _I_g / (_A_g * _yb)           # bottom kern distance (mm)
+            _e_max =  _yb - _COVER_ECC             # max below centroid
+            _e_min = -(_yt - _COVER_ECC)           # max above centroid
+            _Pe    = max(1.0, res.fpe * _A_ps_eff) # effective prestress force (N)
+
+            def _e_elastic(M_kNm, _Pe=_Pe, _kb=_kb, _e_min=_e_min, _e_max=_e_max):
+                e = M_kNm * 1e6 / _Pe - _kb
+                return max(_e_min, min(_e_max, e))
+
+            # End anchors: tendon at centroid (e = 0); interior supports: elastic
+            _e_left  = 0.0 if i == 0               else _e_elastic(service_moments[i][0])
+            _e_mid   = _e_elastic(service_moments[i][1])
+            _e_right = 0.0 if i == num_spans - 1   else _e_elastic(service_moments[i][2])
+
             def _fmt(v):
                 return f"+{v:.1f}" if v >= 0 else f"{v:.1f}"
             ecc_rows.append(air.Tr(
                 air.Td(f"Span {i+1}", style="padding:8px;"),
-                air.Td(_fmt(sdd['e_left'])  + " mm", style="padding:8px;text-align:center;"),
-                air.Td(_fmt(sdd['e_mid'])   + " mm", style="padding:8px;text-align:center;font-weight:600;"),
-                air.Td(_fmt(sdd['e_right']) + " mm", style="padding:8px;text-align:center;"),
+                air.Td(_fmt(_e_left)  + " mm", style="padding:8px;text-align:center;"),
+                air.Td(_fmt(_e_mid)   + " mm", style="padding:8px;text-align:center;font-weight:600;"),
+                air.Td(_fmt(_e_right) + " mm", style="padding:8px;text-align:center;"),
                 style="border-bottom:1px solid #e2e8f0;"
             ))
 
         s3 = air.Div(
             air.H2("3. Tendon Eccentricity Profile"),
-            air.P(f"Profile: {profile_note}  |  Positive = below centroid, Negative = above centroid.",
+            air.P(f"Profile: {profile_note}  |  Positive = below centroid, Negative = above centroid.  "
+                  "Values are elastically required eccentricities (e = M_service / P_e − I/A·yb) "
+                  "clamped to section geometry.",
                   style="color:#64748b;font-size:14px;margin-bottom:8px;"),
             air.Table(
                 air.Thead(air.Tr(
@@ -1459,19 +1758,54 @@ def setup_prestress_beam_routes(app):
         )
 
         # Section 5 – Verification DCR table
+        import math as _sm5
+        _fci5 = data.fci_prime
+        _fc5  = data.fc_prime
+
+        def _svc_stress_dcr(res5, _fci5=_fci5, _fc5=_fc5, n=num_spans):
+            """Return worst DCR across initial and service stress checks for this span."""
+            def _d(f, is_init, is_end):
+                if is_init:
+                    lc = _fci5 * (0.70 if is_end else 0.60)
+                    lt = _sm5.sqrt(_fci5) * (0.50 if is_end else 0.25)
+                else:
+                    lc = _fc5 * 0.45
+                    lt = _sm5.sqrt(_fc5) * 0.62
+                return abs(f) / lc if f < 0 else (f / lt if lt > 0 else 0.0)
+
+            is_l_end = (res5.span_index == 0)
+            is_r_end = (res5.span_index == n - 1)
+            dcrs_i = [
+                _d(res5.left_st_i,  True, is_l_end), _d(res5.left_sb_i,  True, is_l_end),
+                _d(res5.mid_st_i,   True, False),     _d(res5.mid_sb_i,   True, False),
+                _d(res5.right_st_i, True, is_r_end),  _d(res5.right_sb_i, True, is_r_end),
+            ]
+            dcrs_s = [
+                _d(res5.left_st_s,  False, is_l_end), _d(res5.left_sb_s,  False, is_l_end),
+                _d(res5.mid_st_s,   False, False),     _d(res5.mid_sb_s,   False, False),
+                _d(res5.right_st_s, False, is_r_end),  _d(res5.right_sb_s, False, is_r_end),
+            ]
+            return max(dcrs_i), max(dcrs_s)
+
         dcr_rows = []
         for res in analysis_results:
             ok = res.utilization_ratio <= 1.0
+            dcr_i, dcr_s = _svc_stress_dcr(res)
+            def _dcr_td(d, bold=False):
+                ok_d = d <= 1.0
+                return air.Td(f"{d:.2f}",
+                              style=f"padding:8px;text-align:center;font-weight:{'600' if (not ok_d or bold) else 'normal'};color:{'#dc2626' if not ok_d else '#374151'};")
             dcr_rows.append(air.Tr(
                 air.Td(f"Span {res.span_index + 1}", style="padding:8px;"),
-                air.Td(f"{res.dcr_flexure_mid:.2f}", style="padding:8px;text-align:center;"),
-                air.Td(f"{max(res.dcr_shear_left, res.dcr_shear_mid, res.dcr_shear_right):.2f}",
-                       style="padding:8px;text-align:center;"),
-                air.Td(f"{res.dcr_deflect_mid:.2f}", style="padding:8px;text-align:center;"),
+                _dcr_td(dcr_i),
+                _dcr_td(dcr_s),
+                _dcr_td(res.dcr_flexure_mid),
+                _dcr_td(max(res.dcr_shear_left, res.dcr_shear_mid, res.dcr_shear_right)),
+                _dcr_td(res.dcr_deflect_mid),
                 air.Td(f"{res.utilization_ratio:.2f}",
                        style=f"padding:8px;text-align:center;font-weight:600;"
                              f"color:{'#16a34a' if ok else '#dc2626'};"),
-                air.Td("✓ PASS" if ok else "✗ EXCEEDS",
+                air.Td("✓ PASS" if ok else "✗ FAIL",
                        style=f"padding:8px;text-align:center;font-weight:600;"
                              f"color:{'#16a34a' if ok else '#dc2626'};"),
                 style="border-bottom:1px solid #e2e8f0;"
@@ -1485,12 +1819,14 @@ def setup_prestress_beam_routes(app):
                   style="color:#64748b;font-size:14px;margin-bottom:8px;"),
             air.Table(
                 air.Thead(air.Tr(
-                    air.Th("Span", style="padding:8px;text-align:left;border-bottom:2px solid #94a3b8;"),
-                    air.Th("DCR Flexure (mid)", style="padding:8px;text-align:center;border-bottom:2px solid #94a3b8;"),
-                    air.Th("DCR Shear (max)", style="padding:8px;text-align:center;border-bottom:2px solid #94a3b8;"),
-                    air.Th("DCR Deflection", style="padding:8px;text-align:center;border-bottom:2px solid #94a3b8;"),
-                    air.Th("Max DCR", style="padding:8px;text-align:center;border-bottom:2px solid #94a3b8;"),
-                    air.Th("Status", style="padding:8px;text-align:center;border-bottom:2px solid #94a3b8;"),
+                    air.Th("Span",               style="padding:8px;text-align:left;border-bottom:2px solid #94a3b8;"),
+                    air.Th("DCR Stress (Init.)", style="padding:8px;text-align:center;border-bottom:2px solid #94a3b8;"),
+                    air.Th("DCR Stress (Svc.)",  style="padding:8px;text-align:center;border-bottom:2px solid #94a3b8;"),
+                    air.Th("DCR Flexure (mid)",  style="padding:8px;text-align:center;border-bottom:2px solid #94a3b8;"),
+                    air.Th("DCR Shear (max)",    style="padding:8px;text-align:center;border-bottom:2px solid #94a3b8;"),
+                    air.Th("DCR Deflection",     style="padding:8px;text-align:center;border-bottom:2px solid #94a3b8;"),
+                    air.Th("Max DCR",            style="padding:8px;text-align:center;border-bottom:2px solid #94a3b8;"),
+                    air.Th("Status",             style="padding:8px;text-align:center;border-bottom:2px solid #94a3b8;"),
                 )),
                 air.Tbody(*dcr_rows),
                 style="width:100%;border-collapse:collapse;"
@@ -1533,12 +1869,25 @@ def setup_prestress_beam_routes(app):
                     'description': 'Custom (A416 12.70mm fallback)'
                 }
 
+            # Parse per-span detail to derive global tendon and rebar params
+            import math as _pdf_math
+            try:
+                _pdf_spans_detail = json.loads(data.spans_detail_data)
+            except Exception:
+                _pdf_spans_detail = []
+            _pdf_first_detail = _pdf_spans_detail[0] if _pdf_spans_detail else {}
+            _pdf_eccentricity  = float(_pdf_first_detail.get('e_m', 200.0))
+            _pdf_profile       = _pdf_first_detail.get('profile', 'parabolic')
+
+            def _pdf_rebar_area(n_bars, dia_mm):
+                return int(n_bars) * _pdf_math.pi / 4.0 * float(dia_mm) ** 2 if float(dia_mm) > 0 else 0.0
+
             tendon = PrestressTendon(
                 material_type=mat_type,
                 diameter=prop['diameter'], area=prop['area'],
                 fpu=prop['fpu'], fpy=prop['fpy'],
                 number_of_tendons=data.num_tendons,
-                eccentricity=data.eccentricity,
+                eccentricity=_pdf_eccentricity,
                 slip=data.slip, friction_mu=data.friction_mu,
                 friction_k=data.friction_k,
                 jacking_force=data.jacking_force,
@@ -1602,13 +1951,25 @@ def setup_prestress_beam_routes(app):
             if len(supports_types) < num_spans + 1:
                 supports_types += ['column/wall'] * (num_spans + 1 - len(supports_types))
 
+            # Pad spans_detail and compute critical rebar areas
+            while len(_pdf_spans_detail) < num_spans:
+                _pdf_spans_detail.append({})
+            _pdf_rebar_as_bot = max(
+                (_pdf_rebar_area(sd.get('bn_m', 0), sd.get('bd_m', 20)) for sd in _pdf_spans_detail),
+                default=0.0
+            )
+            _pdf_rebar_as_top = max(
+                (_pdf_rebar_area(sd.get('tn_m', 0), sd.get('td_m', 16)) for sd in _pdf_spans_detail),
+                default=0.0
+            )
+
             results = designer.run_continuous_analysis(
                 spans=spans, span_loads=span_loads,
                 supports_types=supports_types, tendon=tendon,
                 mat_props=mat_props, fci_prime=data.fci_prime,
                 method=method_type, member_type=PrestressMemberType.BEAM,
-                tendon_profile=data.tendon_profile,
-                rebar_as_bot=data.rebar_as_bot, rebar_as_top=data.rebar_as_top,
+                tendon_profile=_pdf_profile,
+                rebar_as_bot=_pdf_rebar_as_bot, rebar_as_top=_pdf_rebar_as_top,
                 rebar_fy=data.rebar_fy,
                 long_term_multiplier=data.long_term_multiplier,
                 deflection_limit=data.deflection_limit,
