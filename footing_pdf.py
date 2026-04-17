@@ -150,6 +150,37 @@ def generate_footing_report(data, mat, geom, loads, res):
                 )
             )
 
+        # Footing plan diagram
+        _sx = res.reinforcement.bottom_spacing_x
+        _sy = res.reinforcement.bottom_spacing_y
+        _n_bot_x = max(2, round(data.length / _sx))
+        _n_bot_y = max(2, round(data.width / _sy))
+        _n_top_x = (
+            max(2, round(data.length / res.reinforcement.top_spacing_x))
+            if res.reinforcement.top_bars_x
+            else 0
+        )
+        _n_top_y = (
+            max(2, round(data.width / res.reinforcement.top_spacing_y))
+            if res.reinforcement.top_bars_y
+            else 0
+        )
+        tikz_plan = draw_footing_plan_tikz(
+            data.length,
+            data.width,
+            data.col_w,
+            data.col_d,
+            data.length / 2 + data.ecc_x,
+            data.width / 2 + data.ecc_y,
+            _n_bot_x,
+            _n_bot_y,
+            _n_top_x,
+            _n_top_y,
+        )
+        doc.append(NoEscape(r"\begin{center}"))
+        doc.append(NoEscape(tikz_plan))
+        doc.append(NoEscape(r"\end{center}"))
+
     # --- Section 2: Loads ---
     with doc.create(Section("Applied Loads")):
         with doc.create(Subsection("Factored (Ultimate) Loads")):
@@ -671,11 +702,10 @@ def generate_footing_report(data, mat, geom, loads, res):
                     itemize.add_item(NoEscape(safe_note))
 
     # --- Generate PDF ---
-    temp_dir = tempfile.mkdtemp()
-    filepath = os.path.join(temp_dir, "footing_report")
-    doc.generate_pdf(filepath, clean_tex=False)
-
-    with open(filepath + ".pdf", "rb") as f:
-        pdf_bytes = f.read()
+    with tempfile.TemporaryDirectory() as temp_dir:
+        filepath = os.path.join(temp_dir, "footing_report")
+        doc.generate_pdf(filepath, clean_tex=False)
+        with open(filepath + ".pdf", "rb") as f:
+            pdf_bytes = f.read()
 
     return pdf_bytes

@@ -5,6 +5,7 @@ ACI 318M-25 Footing Design Library with OpenSeesPy FEA
 Building Code Requirements for Structural Concrete - Foundation Design
 """
 
+import asyncio
 import math
 from typing import Dict, Tuple, List, Optional
 from dataclasses import dataclass, field
@@ -25,6 +26,10 @@ try:
     OPENSEES_AVAILABLE = True
 except ImportError:
     OPENSEES_AVAILABLE = False
+
+# Global lock: OpenSeesPy uses process-wide global state, so only one
+# analysis may run at a time to prevent data corruption.
+_OPENSEES_LOCK = asyncio.Lock()
 
 
 class FootingType(Enum):
@@ -93,6 +98,25 @@ class FootingReinforcement:
     dowel_bars: str
     dowel_length: float
 
+    def to_dict(self) -> dict:
+        return {
+            "bottom_bars_x": self.bottom_bars_x,
+            "bottom_spacing_x": self.bottom_spacing_x,
+            "bottom_bars_y": self.bottom_bars_y,
+            "bottom_spacing_y": self.bottom_spacing_y,
+            "top_bars_x": self.top_bars_x,
+            "top_spacing_x": self.top_spacing_x,
+            "top_bars_y": self.top_bars_y,
+            "top_spacing_y": self.top_spacing_y,
+            "development_length": self.development_length,
+            "dowel_bars": self.dowel_bars,
+            "dowel_length": self.dowel_length,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "FootingReinforcement":
+        return cls(**d)
+
 
 @dataclass
 class FootingAnalysisResult:
@@ -123,13 +147,49 @@ class FootingAnalysisResult:
     two_way_shear_demand: float = 0.0
     two_way_shear_capacity: float = 0.0
 
+    def to_dict(self) -> dict:
+        return {
+            "bearing_pressure_max": self.bearing_pressure_max,
+            "bearing_pressure_min": self.bearing_pressure_min,
+            "bearing_ok": self.bearing_ok,
+            "one_way_shear_ok": self.one_way_shear_ok,
+            "two_way_shear_ok": self.two_way_shear_ok,
+            "reinforcement": self.reinforcement.to_dict(),
+            "utilization_ratio": self.utilization_ratio,
+            "design_notes": self.design_notes,
+            "fea_moment_x": self.fea_moment_x,
+            "fea_moment_y": self.fea_moment_y,
+            "fea_shear_x": self.fea_shear_x,
+            "fea_shear_y": self.fea_shear_y,
+            "contours": self.contours,
+            "overturning_ok": self.overturning_ok,
+            "fs_overturning_x": self.fs_overturning_x,
+            "fs_overturning_y": self.fs_overturning_y,
+            "bearing_limit_used": self.bearing_limit_used,
+            "detailed_calcs": self.detailed_calcs,
+            "fea_moment_x_pos": self.fea_moment_x_pos,
+            "fea_moment_x_neg": self.fea_moment_x_neg,
+            "fea_moment_y_pos": self.fea_moment_y_pos,
+            "fea_moment_y_neg": self.fea_moment_y_neg,
+            "one_way_shear_demand": self.one_way_shear_demand,
+            "one_way_shear_capacity": self.one_way_shear_capacity,
+            "two_way_shear_demand": self.two_way_shear_demand,
+            "two_way_shear_capacity": self.two_way_shear_capacity,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "FootingAnalysisResult":
+        d = dict(d)
+        d["reinforcement"] = FootingReinforcement.from_dict(d["reinforcement"])
+        return cls(**d)
+
 
 class ACI318M25FootingDesign:
     def __init__(self):
         self.aci = ACI318M25()
         self.phi_factors = {"flexure": 0.90, "shear": 0.75, "bearing": 0.65}
 
-    def _run_opensees_analysis(
+    async def _run_opensees_analysis(
         self,
         geom: FootingGeometry,
         loads: FootingLoads,
@@ -141,286 +201,288 @@ class ACI318M25FootingDesign:
         if not OPENSEES_AVAILABLE:
             raise ImportError("OpenSeesPy is required.")
 
-        ops.wipe()
-        ops.model("basic", "-ndm", 3, "-ndf", 6)
+        async with _OPENSEES_LOCK:
+            ops.wipe()
+            ops.model("basic", "-ndm", 3, "-ndf", 6)
 
-        Ec = mat_props.ec
-        nu = 0.2
-        h = geom.thickness
+            Ec = mat_props.ec
+            nu = 0.2
+            h = geom.thickness
 
-        # ShellMITC4 — fine mesh for accuracy (40x40 = 1600 elements)
-        ops.nDMaterial("ElasticIsotropic", 1, Ec, nu)
-        ops.section("ElasticMembranePlateSection", 1, Ec, nu, h, 0.0)
+            # ShellMITC4 — fine mesh for accuracy (40x40 = 1600 elements)
+            ops.nDMaterial("ElasticIsotropic", 1, Ec, nu)
+            ops.section("ElasticMembranePlateSection", 1, Ec, nu, h, 0.0)
 
-        Lx, Ly = geom.length, geom.width
-        nx, ny = geom.mesh_nx, geom.mesh_ny
-        dx, dy = Lx / nx, Ly / ny
+            Lx, Ly = geom.length, geom.width
+            nx, ny = geom.mesh_nx, geom.mesh_ny
+            dx, dy = Lx / nx, Ly / ny
 
-        # Create nodes (center of footing at 0,0)
-        nodeTags = {}
-        for i in range(nx + 1):
-            for j in range(ny + 1):
-                tag = i * (ny + 1) + j + 1
-                x = i * dx - Lx / 2.0
-                y = j * dy - Ly / 2.0
-                ops.node(tag, x, y, 0.0)
-                nodeTags[(i, j)] = tag
+            # Create nodes (center of footing at 0,0)
+            nodeTags = {}
+            for i in range(nx + 1):
+                for j in range(ny + 1):
+                    tag = i * (ny + 1) + j + 1
+                    x = i * dx - Lx / 2.0
+                    y = j * dy - Ly / 2.0
+                    ops.node(tag, x, y, 0.0)
+                    nodeTags[(i, j)] = tag
 
-        # ShellMITC4 elements
-        eleTag = 1
-        eleTags = {}  # (i,j) -> eleTag for force extraction
-        for i in range(nx):
-            for j in range(ny):
-                n1 = nodeTags[(i, j)]
-                n2 = nodeTags[(i + 1, j)]
-                n3 = nodeTags[(i + 1, j + 1)]
-                n4 = nodeTags[(i, j + 1)]
-                ops.element("ShellMITC4", eleTag, n1, n2, n3, n4, 1)
-                eleTags[(i, j)] = eleTag
-                eleTag += 1
+            # ShellMITC4 elements
+            eleTag = 1
+            eleTags = {}  # (i,j) -> eleTag for force extraction
+            for i in range(nx):
+                for j in range(ny):
+                    n1 = nodeTags[(i, j)]
+                    n2 = nodeTags[(i + 1, j)]
+                    n3 = nodeTags[(i + 1, j + 1)]
+                    n4 = nodeTags[(i, j + 1)]
+                    ops.element("ShellMITC4", eleTag, n1, n2, n3, n4, 1)
+                    eleTags[(i, j)] = eleTag
+                    eleTag += 1
 
-        # Compression-only Soil Springs
-        ks_mpa_mm = geom.soil_modulus * 1e-6  # Convert kN/m³ to N/mm³ (MPa/mm)
-        matTag_spring = 100
+            # Compression-only Soil Springs
+            ks_mpa_mm = geom.soil_modulus * 1e-6  # Convert kN/m³ to N/mm³ (MPa/mm)
+            matTag_spring = 100
 
-        for i in range(nx + 1):
-            for j in range(ny + 1):
-                ax = dx if (0 < i < nx) else dx / 2.0
-                ay = dy if (0 < j < ny) else dy / 2.0
-                trib_area = ax * ay  # mm²
+            for i in range(nx + 1):
+                for j in range(ny + 1):
+                    ax = dx if (0 < i < nx) else dx / 2.0
+                    ay = dy if (0 < j < ny) else dy / 2.0
+                    trib_area = ax * ay  # mm²
 
-                k_spring = ks_mpa_mm * trib_area  # N/mm
-                if k_spring < 1e-9:
-                    continue
+                    k_spring = ks_mpa_mm * trib_area  # N/mm
+                    if k_spring < 1e-9:
+                        continue
 
-                spring_mat = matTag_spring + nodeTags[(i, j)]
-                ops.uniaxialMaterial("ENT", spring_mat, k_spring)
+                    spring_mat = matTag_spring + nodeTags[(i, j)]
+                    ops.uniaxialMaterial("ENT", spring_mat, k_spring)
 
-                support_tag = nodeTags[(i, j)] + 10000
-                ops.node(support_tag, i * dx - Lx / 2.0, j * dy - Ly / 2.0, 0.0)
-                ops.fix(support_tag, 1, 1, 1, 1, 1, 1)
+                    support_tag = nodeTags[(i, j)] + 10000
+                    ops.node(support_tag, i * dx - Lx / 2.0, j * dy - Ly / 2.0, 0.0)
+                    ops.fix(support_tag, 1, 1, 1, 1, 1, 1)
 
-                ops.element(
-                    "zeroLength",
-                    eleTag,
-                    support_tag,
-                    nodeTags[(i, j)],
-                    "-mat",
-                    spring_mat,
-                    "-dir",
-                    3,
-                )
-                eleTag += 1
+                    ops.element(
+                        "zeroLength",
+                        eleTag,
+                        support_tag,
+                        nodeTags[(i, j)],
+                        "-mat",
+                        spring_mat,
+                        "-dir",
+                        3,
+                    )
+                    eleTag += 1
 
-        # Torsional stability constraint
-        ops.fix(nodeTags[(nx // 2, ny // 2)], 1, 1, 0, 0, 0, 1)
+            # Torsional stability constraint
+            ops.fix(nodeTags[(nx // 2, ny // 2)], 1, 1, 0, 0, 0, 1)
 
-        # Apply Column Loads via Rigid Spider
-        col_x, col_y = geom.ecc_x, geom.ecc_y
-        master_node = 99999
-        ops.node(master_node, col_x, col_y, 0.0)
+            # Apply Column Loads via Rigid Spider
+            col_x, col_y = geom.ecc_x, geom.ecc_y
+            master_node = 99999
+            ops.node(master_node, col_x, col_y, 0.0)
 
-        cw, cd = geom.column_width, geom.column_depth
-        footprint_nodes = []
-        for (i, j), tag in nodeTags.items():
-            x = i * dx - Lx / 2.0
-            y = j * dy - Ly / 2.0
-            if abs(x - col_x) <= cw / 2.0 and abs(y - col_y) <= cd / 2.0:
-                footprint_nodes.append(tag)
-
-        if not footprint_nodes:
-            min_dist, best_node = float("inf"), None
+            cw, cd = geom.column_width, geom.column_depth
+            footprint_nodes = []
             for (i, j), tag in nodeTags.items():
                 x = i * dx - Lx / 2.0
                 y = j * dy - Ly / 2.0
-                d = math.hypot(x - col_x, y - col_y)
-                if d < min_dist:
-                    min_dist, best_node = d, tag
-            footprint_nodes.append(best_node)
+                if abs(x - col_x) <= cw / 2.0 and abs(y - col_y) <= cd / 2.0:
+                    footprint_nodes.append(tag)
 
-        for fn in footprint_nodes:
-            ops.rigidLink("beam", master_node, fn)
+            if not footprint_nodes:
+                min_dist, best_node = float("inf"), None
+                for (i, j), tag in nodeTags.items():
+                    x = i * dx - Lx / 2.0
+                    y = j * dy - Ly / 2.0
+                    d = math.hypot(x - col_x, y - col_y)
+                    if d < min_dist:
+                        min_dist, best_node = d, tag
+                footprint_nodes.append(best_node)
 
-        # Apply Loads
-        P = loads.service_axial if is_service else loads.axial_force
-        Mx = loads.service_moment_x if is_service else loads.moment_x
-        My = loads.service_moment_y if is_service else loads.moment_y
+            for fn in footprint_nodes:
+                ops.rigidLink("beam", master_node, fn)
 
-        ops.timeSeries("Linear", 1)
-        ops.pattern("Plain", 1, 1)
-        ops.load(master_node, 0.0, 0.0, -P * 1000.0, Mx * 1e6, My * 1e6, 0.0)
+            # Apply Loads
+            P = loads.service_axial if is_service else loads.axial_force
+            Mx = loads.service_moment_x if is_service else loads.moment_x
+            My = loads.service_moment_y if is_service else loads.moment_y
 
-        # Self-weight of footing
-        w_sw = 24e-6 * h  # N/mm²
-        factor = 1.0 if is_service else 1.2
-        for (i, j), tag in nodeTags.items():
-            ax = dx if (0 < i < nx) else dx / 2.0
-            ay = dy if (0 < j < ny) else dy / 2.0
-            ops.load(tag, 0.0, 0.0, -w_sw * (ax * ay) * factor, 0.0, 0.0, 0.0)
+            ops.timeSeries("Linear", 1)
+            ops.pattern("Plain", 1, 1)
+            ops.load(master_node, 0.0, 0.0, -P * 1000.0, Mx * 1e6, My * 1e6, 0.0)
 
-        # Soil above footing (dead load) + surcharge as uniform downward pressure
-        if soil.soil_depth > 0 or loads.surcharge_dl > 0 or loads.surcharge_ll > 0:
-            soil_pressure = soil.unit_weight * (soil.soil_depth / 1000.0)  # kPa
-            surcharge = loads.surcharge_dl  # kPa (service-level DL surcharge)
-            if not is_service:
-                # Apply load factors: 1.2 for DL surcharge, 1.6 for LL surcharge
-                soil_pressure *= 1.2
-                surcharge = loads.surcharge_dl * 1.2 + loads.surcharge_ll * 1.6
-            total_overburden = soil_pressure + surcharge  # kPa = kN/m² = 0.001 N/mm²
-            overburden_n_mm2 = total_overburden * 0.001  # kPa -> N/mm²
+            # Self-weight of footing
+            w_sw = 24e-6 * h  # N/mm²
+            factor = 1.0 if is_service else 1.2
             for (i, j), tag in nodeTags.items():
                 ax = dx if (0 < i < nx) else dx / 2.0
                 ay = dy if (0 < j < ny) else dy / 2.0
-                ops.load(tag, 0.0, 0.0, -overburden_n_mm2 * (ax * ay), 0.0, 0.0, 0.0)
+                ops.load(tag, 0.0, 0.0, -w_sw * (ax * ay) * factor, 0.0, 0.0, 0.0)
 
-        # Analysis settings
-        ops.system("UmfPack")
-        ops.numberer("RCM")
-        ops.constraints("Transformation")
-        ops.test("NormDispIncr", 1.0e-6, 50, 0)
-        ops.algorithm("Newton")
-        ops.integrator("LoadControl", 0.1)
-        ops.analysis("Static")
+            # Soil above footing (dead load) + surcharge as uniform downward pressure
+            if soil.soil_depth > 0 or loads.surcharge_dl > 0 or loads.surcharge_ll > 0:
+                soil_pressure = soil.unit_weight * (soil.soil_depth / 1000.0)  # kPa
+                surcharge = loads.surcharge_dl  # kPa (service-level DL surcharge)
+                if not is_service:
+                    # Apply load factors: 1.2 for DL surcharge, 1.6 for LL surcharge
+                    soil_pressure *= 1.2
+                    surcharge = loads.surcharge_dl * 1.2 + loads.surcharge_ll * 1.6
+                total_overburden = soil_pressure + surcharge  # kPa = kN/m² = 0.001 N/mm²
+                overburden_n_mm2 = total_overburden * 0.001  # kPa -> N/mm²
+                for (i, j), tag in nodeTags.items():
+                    ax = dx if (0 < i < nx) else dx / 2.0
+                    ay = dy if (0 < j < ny) else dy / 2.0
+                    ops.load(tag, 0.0, 0.0, -overburden_n_mm2 * (ax * ay), 0.0, 0.0, 0.0)
 
-        ok = ops.analyze(10)
-        if ok != 0:
-            notes.append("⚠️ FEA convergence difficulty; results should be verified.")
+            # Analysis settings
+            ops.system("UmfPack")
+            ops.numberer("RCM")
+            ops.constraints("Transformation")
+            ops.test("NormDispIncr", 1.0e-6, 50, 0)
+            ops.algorithm("Newton")
+            ops.integrator("LoadControl", 0.1)
+            ops.analysis("Static")
 
-        # Extract Results
-        W = np.zeros((nx + 1, ny + 1))
-        MXX = np.zeros((nx + 1, ny + 1))
-        MYY = np.zeros((nx + 1, ny + 1))
-        MXY = np.zeros((nx + 1, ny + 1))
-        Q_SOIL = np.zeros((nx + 1, ny + 1))
+            ok = ops.analyze(10)
+            if ok != 0:
+                notes.append("⚠️ FEA convergence difficulty; results should be verified.")
 
-        def get_w(xi, yj):
-            return ops.nodeDisp(xi * (ny + 1) + yj + 1, 3)
+            # Extract Results
+            W = np.zeros((nx + 1, ny + 1))
+            MXX = np.zeros((nx + 1, ny + 1))
+            MYY = np.zeros((nx + 1, ny + 1))
+            MXY = np.zeros((nx + 1, ny + 1))
+            Q_SOIL = np.zeros((nx + 1, ny + 1))
 
-        for i in range(nx + 1):
-            for j in range(ny + 1):
-                n_c = i * (ny + 1) + j + 1
-                wc = ops.nodeDisp(n_c, 3)
-                W[i, j] = wc
+            def get_w(xi, yj):
+                return ops.nodeDisp(xi * (ny + 1) + yj + 1, 3)
 
-                if wc < 0:
-                    Q_SOIL[i, j] = abs(wc) * ks_mpa_mm * 1000.0
-
-        # Moments from soil pressure integration (classical footing method)
-        # M at node (i,j) = integral of q * lever_arm from that point to the *nearest* edge
-        # This represents the cantilever moment for the footing strip
-        # Q_SOIL is in kPa (= kN/m²), dx_m/dy_m are in meters
-        # Result: kN/m² * m * m = kN-m/m
-        dx_m = dx / 1000.0  # mm -> m
-        dy_m = dy / 1000.0
-
-        for j in range(ny + 1):
             for i in range(nx + 1):
-                # Mxx: bending in x-direction
-                # Distance to left edge and right edge
-                dist_to_left = i * dx_m
-                dist_to_right = (nx - i) * dx_m
+                for j in range(ny + 1):
+                    n_c = i * (ny + 1) + j + 1
+                    wc = ops.nodeDisp(n_c, 3)
+                    W[i, j] = wc
 
-                if dist_to_left <= dist_to_right:
-                    # Integrate to left edge (near edge)
-                    mx = 0.0
-                    for k in range(i, 0, -1):
-                        q_avg = (Q_SOIL[k, j] + Q_SOIL[k - 1, j]) / 2.0
-                        dist = (i - k + 0.5) * dx_m
-                        mx += q_avg * dx_m * dist
-                else:
-                    # Integrate to right edge (near edge)
-                    mx = 0.0
-                    for k in range(i, nx):
-                        q_avg = (Q_SOIL[k, j] + Q_SOIL[k + 1, j]) / 2.0
-                        dist = (k - i + 0.5) * dx_m
-                        mx += q_avg * dx_m * dist
+                    if wc < 0:
+                        Q_SOIL[i, j] = abs(wc) * ks_mpa_mm * 1000.0
 
-                MXX[i, j] = mx
+            # Moments from soil pressure integration (classical footing method)
+            # M at node (i,j) = integral of q * lever_arm from that point to the *nearest* edge
+            # This represents the cantilever moment for the footing strip
+            # Q_SOIL is in kPa (= kN/m²), dx_m/dy_m are in meters
+            # Result: kN/m² * m * m = kN-m/m
+            dx_m = dx / 1000.0  # mm -> m
+            dy_m = dy / 1000.0
 
-        for i in range(nx + 1):
             for j in range(ny + 1):
-                # Myy: bending in y-direction
-                dist_to_bot = j * dy_m
-                dist_to_top = (ny - j) * dy_m
+                for i in range(nx + 1):
+                    # Mxx: bending in x-direction
+                    # Distance to left edge and right edge
+                    dist_to_left = i * dx_m
+                    dist_to_right = (nx - i) * dx_m
 
-                if dist_to_bot <= dist_to_top:
-                    my = 0.0
-                    for k in range(j, 0, -1):
-                        q_avg = (Q_SOIL[i, k] + Q_SOIL[i, k - 1]) / 2.0
-                        dist = (j - k + 0.5) * dy_m
-                        my += q_avg * dy_m * dist
-                else:
-                    my = 0.0
-                    for k in range(j, ny):
-                        q_avg = (Q_SOIL[i, k] + Q_SOIL[i, k + 1]) / 2.0
-                        dist = (k - j + 0.5) * dy_m
-                        my += q_avg * dy_m * dist
+                    if dist_to_left <= dist_to_right:
+                        # Integrate to left edge (near edge)
+                        mx = 0.0
+                        for k in range(i, 0, -1):
+                            q_avg = (Q_SOIL[k, j] + Q_SOIL[k - 1, j]) / 2.0
+                            dist = (i - k + 0.5) * dx_m
+                            mx += q_avg * dx_m * dist
+                    else:
+                        # Integrate to right edge (near edge)
+                        mx = 0.0
+                        for k in range(i, nx):
+                            q_avg = (Q_SOIL[k, j] + Q_SOIL[k + 1, j]) / 2.0
+                            dist = (k - i + 0.5) * dx_m
+                            mx += q_avg * dx_m * dist
 
-                MYY[i, j] = my
+                    MXX[i, j] = mx
 
-        # Twisting moment Mxy from displacement cross-curvature (plate theory)
-        # Mxy = -D*(1-nu) * d²w/dxdy
-        # Use the smooth FEA displacement field for this
-        D_plate = (Ec * h**3) / (12.0 * (1.0 - nu**2))  # N-mm
-        for i in range(1, nx):
-            for j in range(1, ny):
-                wbl = get_w(i - 1, j - 1)
-                wbr = get_w(i + 1, j - 1)
-                wtl = get_w(i - 1, j + 1)
-                wtr = get_w(i + 1, j + 1)
-                d2w_dxdy = (wtr - wtl - wbr + wbl) / (4.0 * dx * dy)
-                MXY[i, j] = -D_plate * (1.0 - nu) * d2w_dxdy * 0.001  # N-mm -> kN-m/m
-
-        # Extrapolate Mxy to edges
-        for i in range(nx + 1):
-            MXY[i, 0] = MXY[i, 1]
-            MXY[i, ny] = MXY[i, ny - 1]
-        for j in range(ny + 1):
-            MXY[0, j] = MXY[1, j]
-            MXY[nx, j] = MXY[nx - 1, j]
-
-        # Shear from soil pressure integration (physically correct for footings)
-        # Vx = integral of soil pressure from edge to section, per unit width
-        # Vy = integral of soil pressure from edge to section, per unit width
-        VX = np.zeros((nx + 1, ny + 1))
-        VY = np.zeros((nx + 1, ny + 1))
-
-        dx_m = dx / 1000.0  # element width in meters
-        dy_m = dy / 1000.0  # element width in meters
-
-        for j in range(ny + 1):
-            vx_left = 0.0
-            vx_right = 0.0
             for i in range(nx + 1):
-                q = Q_SOIL[i, j]  # kPa = kN/m²
-                vx_left += q * dx_m  # kN/m² * m = kN/m
-                VX[i, j] = vx_left
-            for i in range(nx, -1, -1):
-                q = Q_SOIL[i, j]
-                vx_right += q * dx_m
-                VX[i, j] = max(VX[i, j], vx_right)
+                for j in range(ny + 1):
+                    # Myy: bending in y-direction
+                    dist_to_bot = j * dy_m
+                    dist_to_top = (ny - j) * dy_m
 
-        for i in range(nx + 1):
-            vy_bot = 0.0
-            vy_top = 0.0
+                    if dist_to_bot <= dist_to_top:
+                        my = 0.0
+                        for k in range(j, 0, -1):
+                            q_avg = (Q_SOIL[i, k] + Q_SOIL[i, k - 1]) / 2.0
+                            dist = (j - k + 0.5) * dy_m
+                            my += q_avg * dy_m * dist
+                    else:
+                        my = 0.0
+                        for k in range(j, ny):
+                            q_avg = (Q_SOIL[i, k] + Q_SOIL[i, k + 1]) / 2.0
+                            dist = (k - j + 0.5) * dy_m
+                            my += q_avg * dy_m * dist
+
+                    MYY[i, j] = my
+
+            # Twisting moment Mxy from displacement cross-curvature (plate theory)
+            # Mxy = -D*(1-nu) * d²w/dxdy
+            # Use the smooth FEA displacement field for this
+            D_plate = (Ec * h**3) / (12.0 * (1.0 - nu**2))  # N-mm
+            for i in range(1, nx):
+                for j in range(1, ny):
+                    wbl = get_w(i - 1, j - 1)
+                    wbr = get_w(i + 1, j - 1)
+                    wtl = get_w(i - 1, j + 1)
+                    wtr = get_w(i + 1, j + 1)
+                    d2w_dxdy = (wtr - wtl - wbr + wbl) / (4.0 * dx * dy)
+                    MXY[i, j] = -D_plate * (1.0 - nu) * d2w_dxdy * 0.001  # N-mm -> kN-m/m
+
+            # Extrapolate Mxy to edges
+            for i in range(nx + 1):
+                MXY[i, 0] = MXY[i, 1]
+                MXY[i, ny] = MXY[i, ny - 1]
             for j in range(ny + 1):
-                q = Q_SOIL[i, j]
-                vy_bot += q * dy_m
-                VY[i, j] = vy_bot
-            for j in range(ny, -1, -1):
-                q = Q_SOIL[i, j]
-                vy_top += q * dy_m
-                VY[i, j] = max(VY[i, j], vy_top)
+                MXY[0, j] = MXY[1, j]
+                MXY[nx, j] = MXY[nx - 1, j]
 
-        res_data = {
-            "W": W,
-            "MXX": MXX,
-            "MYY": MYY,
-            "MXY": MXY,
-            "VX": VX,
-            "VY": VY,
-            "Q_SOIL": Q_SOIL,
-        }
+            # Shear from soil pressure integration (physically correct for footings)
+            # Vx = integral of soil pressure from edge to section, per unit width
+            # Vy = integral of soil pressure from edge to section, per unit width
+            VX = np.zeros((nx + 1, ny + 1))
+            VY = np.zeros((nx + 1, ny + 1))
+
+            dx_m = dx / 1000.0  # element width in meters
+            dy_m = dy / 1000.0  # element width in meters
+
+            for j in range(ny + 1):
+                vx_left = 0.0
+                vx_right = 0.0
+                for i in range(nx + 1):
+                    q = Q_SOIL[i, j]  # kPa = kN/m²
+                    vx_left += q * dx_m  # kN/m² * m = kN/m
+                    VX[i, j] = vx_left
+                for i in range(nx, -1, -1):
+                    q = Q_SOIL[i, j]
+                    vx_right += q * dx_m
+                    VX[i, j] = max(VX[i, j], vx_right)
+
+            for i in range(nx + 1):
+                vy_bot = 0.0
+                vy_top = 0.0
+                for j in range(ny + 1):
+                    q = Q_SOIL[i, j]
+                    vy_bot += q * dy_m
+                    VY[i, j] = vy_bot
+                for j in range(ny, -1, -1):
+                    q = Q_SOIL[i, j]
+                    vy_top += q * dy_m
+                    VY[i, j] = max(VY[i, j], vy_top)
+
+            res_data = {
+                "W": W,
+                "MXX": MXX,
+                "MYY": MYY,
+                "MXY": MXY,
+                "VX": VX,
+                "VY": VY,
+                "Q_SOIL": Q_SOIL,
+            }
+
         return res_data, notes
 
     def generate_contour_plots(
@@ -495,27 +557,27 @@ class ACI318M25FootingDesign:
             Z, title, cmap = all_configs[key]
             if Z is None:
                 continue
-            plt.figure(figsize=(5, 4.5))
-            cs = plt.contourf(X, Y, Z, levels=12, cmap=cmap)
-            plt.colorbar(cs)
+            fig, ax = plt.subplots(figsize=(5, 4.5))
+            cs = ax.contourf(X, Y, Z, levels=12, cmap=cmap)
+            fig.colorbar(cs, ax=ax)
 
             cw, cd = geom.column_width, geom.column_depth
             cx, cy = geom.ecc_x, geom.ecc_y
-            plt.plot(
+            ax.plot(
                 [cx - cw / 2, cx + cw / 2, cx + cw / 2, cx - cw / 2, cx - cw / 2],
                 [cy - cd / 2, cy - cd / 2, cy + cd / 2, cy + cd / 2, cy - cd / 2],
                 "k-",
                 linewidth=2,
             )
 
-            plt.title(title, fontsize=12, fontweight="bold", color="#111827")
-            plt.xlabel("X (mm)")
-            plt.ylabel("Y (mm)")
-            plt.tight_layout()
+            ax.set_title(title, fontsize=12, fontweight="bold", color="#111827")
+            ax.set_xlabel("X (mm)")
+            ax.set_ylabel("Y (mm)")
+            fig.tight_layout()
 
             buf = io.BytesIO()
-            plt.savefig(buf, format="png", dpi=80)
-            plt.close()
+            fig.savefig(buf, format="png", dpi=80)
+            plt.close(fig)
             buf.seek(0)
             plots[key] = base64.b64encode(buf.read()).decode("utf-8")
         return plots
@@ -886,7 +948,7 @@ class ACI318M25FootingDesign:
         last_min_s = max(25.0, last_db)
         return last_bar, math.floor(max(last_min_s, last_s) / 10.0) * 10.0
 
-    def perform_complete_design(
+    async def perform_complete_design(
         self,
         geom: FootingGeometry,
         loads: FootingLoads,
@@ -910,7 +972,7 @@ class ACI318M25FootingDesign:
         Ka = (1 - math.sin(phi_rad)) / (1 + math.sin(phi_rad))
 
         # 1. Service Analysis (Bearing Pressure)
-        srv_data, srv_notes = self._run_opensees_analysis(
+        srv_data, srv_notes = await self._run_opensees_analysis(
             geom, loads, soil, mat, is_service=True
         )
         notes.extend(srv_notes)
@@ -959,7 +1021,7 @@ class ACI318M25FootingDesign:
             )
 
         # 2. Ultimate Analysis (Strength)
-        ult_data, ult_notes = self._run_opensees_analysis(
+        ult_data, ult_notes = await self._run_opensees_analysis(
             geom, loads, soil, mat, is_service=False
         )
 
@@ -1140,12 +1202,6 @@ class ACI318M25FootingDesign:
 
         Vu_y = max(Vu_y_bot_max, Vu_y_top_max)
 
-        # One-way shear capacity (ACI 318-25 Table 22.5.5.1) — per unit width
-        phi_v = self.phi_factors["shear"]
-        vc_ow = 0.17 * math.sqrt(mat.fc_prime)  # MPa = N/mm²
-        phiVc_x = phi_v * vc_ow * 1000 * d_m  # MPa * mm * mm = N/mm = kN/m
-        phiVc_y = phi_v * vc_ow * 1000 * d_m  # kN/m
-
         one_way_demand_x = Vu_x  # kN/m
         one_way_demand_y = Vu_y  # kN/m
         one_way_capacity_x = phiVc_x  # kN/m
@@ -1162,7 +1218,7 @@ class ACI318M25FootingDesign:
 
         # Two-way (punching) shear
         two_way_ok, two_way_ratio, two_way_demand, two_way_cap = (
-            self.check_two_way_shear(geom, loads, mat, d_eff)
+            self.check_two_way_shear(geom, loads, mat, d_eff_avg)
         )
         if not two_way_ok:
             notes.append(
@@ -1177,6 +1233,7 @@ class ACI318M25FootingDesign:
         
         # Dead loads from footing/soil always act at the center
         W_dead_total = W_footing + W_soil + W_surcharge
+        P_total = loads.service_axial + W_footing + W_soil + W_surcharge
         
         overturning_moment_x = abs(loads.service_moment_x) + abs(loads.shear_x) * (geom.thickness / 1000.0)
         overturning_moment_y = abs(loads.service_moment_y) + abs(loads.shear_y) * (geom.thickness / 1000.0)
@@ -1219,8 +1276,7 @@ class ACI318M25FootingDesign:
             )
 
         # Generate Visualizations
-        d_eff = geom.thickness - geom.cover - db_bot
-        plots = self.generate_contour_plots(geom, ult_data, mat, d_eff)
+        plots = self.generate_contour_plots(geom, ult_data, mat, d_eff_avg)
         srv_plots = self.generate_contour_plots(
             geom, srv_data, keys_only=["soil_pressure", "settlement"]
         )
@@ -1276,7 +1332,7 @@ class ACI318M25FootingDesign:
             stx,
             ty,
             sty,
-            d_eff_design,
+            d_eff_avg,
             d_eff_top,
             As_min,
             one_way_ok,

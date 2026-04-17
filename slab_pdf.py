@@ -9,6 +9,88 @@ from aci318m25 import ACI318M25
 aci_tool = ACI318M25()
 
 
+def _draw_slab_plan_tikz(data, res) -> str:
+    """Generate TikZ code for a top-down slab plan with edge conditions and bar grid."""
+    lx = data.length_x   # mm
+    ly = data.length_y   # mm
+
+    # Scale so the larger dimension maps to 8 cm
+    s = 8.0 / max(lx, ly) * 10  # convert mm→cm, then scale
+    W = lx * s   # cm
+    H = ly * s   # cm
+
+    def _edge_style(support: str) -> str:
+        if support == "wall":   return "line width=2.0pt, solid, black"
+        if support == "beam":   return "line width=1.5pt, dashed, magenta"
+        if support == "column": return "line width=1.0pt, dash dot, blue"
+        return "line width=0.5pt, dotted, gray"
+
+    lines = [
+        r"\begin{tikzpicture}[scale=1.0]",
+        # filled slab area
+        rf"\fill[gray!15] (0,0) rectangle ({W:.4f},{H:.4f});",
+        # bottom bar grid (blue horizontal lines ≈ main_spacing_y)
+    ]
+
+    # Bar grid — bottom X bars (run along x, spaced in y)
+    if res is not None:
+        sx_cm = res.reinforcement.main_spacing_x * s
+        sy_cm = res.reinforcement.main_spacing_y * s
+        sx_cm = max(sx_cm, 0.05)
+        sy_cm = max(sy_cm, 0.05)
+        n_x_bars = max(2, int(H / sy_cm))
+        n_y_bars = max(2, int(W / sx_cm))
+        for k in range(n_x_bars + 1):
+            y = k * sy_cm
+            if y > H: break
+            lines.append(rf"\draw[blue!60, line width=0.4pt] (0,{y:.4f}) -- ({W:.4f},{y:.4f});")
+        for k in range(n_y_bars + 1):
+            x = k * sx_cm
+            if x > W: break
+            lines.append(rf"\draw[red!60, line width=0.4pt] ({x:.4f},0) -- ({x:.4f},{H:.4f});")
+
+    # Edge borders
+    bot_sty  = _edge_style(data.edge_bot_support)
+    top_sty  = _edge_style(data.edge_top_support)
+    left_sty = _edge_style(data.edge_left_support)
+    rgt_sty  = _edge_style(data.edge_right_support)
+    lines += [
+        rf"\draw[{bot_sty}]  (0,0)       -- ({W:.4f},0);",
+        rf"\draw[{top_sty}]  (0,{H:.4f}) -- ({W:.4f},{H:.4f});",
+        rf"\draw[{left_sty}] (0,0)        -- (0,{H:.4f});",
+        rf"\draw[{rgt_sty}]  ({W:.4f},0)  -- ({W:.4f},{H:.4f});",
+    ]
+
+    # Column dots at corners where support == column
+    col_radius = 0.12
+    corners = {
+        "bot":   [(0, 0), (W, 0)],
+        "top":   [(0, H), (W, H)],
+        "left":  [(0, 0), (0, H)],
+        "right": [(W, 0), (W, H)],
+    }
+    drawn = set()
+    for edge_key, pts in corners.items():
+        sup = getattr(data, f"edge_{edge_key}_support")
+        if sup == "column":
+            for (cx, cy) in pts:
+                key = (round(cx, 4), round(cy, 4))
+                if key not in drawn:
+                    lines.append(rf"\fill[blue!80] ({cx:.4f},{cy:.4f}) circle ({col_radius}cm);")
+                    drawn.add(key)
+
+    # Dimension annotations
+    lines += [
+        rf"\draw[<->, >=stealth] (0,{H + 0.5:.4f}) -- ({W:.4f},{H + 0.5:.4f}) "
+        rf"node[midway, above, font=\small] {{$L_x = {lx:.0f}$ mm}};",
+        rf"\draw[<->, >=stealth] ({W + 0.5:.4f},0) -- ({W + 0.5:.4f},{H:.4f}) "
+        rf"node[midway, right, font=\small] {{$L_y = {ly:.0f}$ mm}};",
+    ]
+
+    lines.append(r"\end{tikzpicture}")
+    return "\n".join(lines)
+
+
 def _safe_note(note: str) -> str:
     """Escape or replace unicode characters that are unsafe in LaTeX."""
     return (
@@ -48,6 +130,8 @@ def generate_slab_report(data, mat_props, geom, loads, res):
     doc.preamble.append(NoEscape(r"\usepackage{amsmath}"))
     doc.preamble.append(NoEscape(r"\usepackage{booktabs}"))
     doc.preamble.append(NoEscape(r"\usepackage{array}"))
+    doc.preamble.append(NoEscape(r"\usepackage{tikz}"))
+    doc.preamble.append(NoEscape(r"\usetikzlibrary{arrows.meta}"))
 
     # ── Header / Footer ──
     header = PageStyle("header")
@@ -137,6 +221,17 @@ def generate_slab_report(data, mat_props, geom, loads, res):
                     rf"Preferred bottom bar: {data.bottom_bar_size}; preferred top bar: {data.top_bar_size}"
                 )
             )
+
+        # Slab plan diagram
+        tikz_plan = _draw_slab_plan_tikz(data, res)
+        doc.append(NoEscape(r"\begin{center}"))
+        doc.append(NoEscape(tikz_plan))
+        doc.append(NoEscape(
+            r"\par\smallskip"
+            r"{\footnotesize\textit{Black solid = Wall \quad Magenta dashed = Beam "
+            r"\quad Blue dash-dot = Column \quad Gray dotted = Free}}"
+        ))
+        doc.append(NoEscape(r"\end{center}"))
 
     # ── Section 2: Edge Conditions ──
     with doc.create(Section("Edge Support Conditions")):
@@ -802,11 +897,10 @@ def generate_slab_report(data, mat_props, geom, loads, res):
                     itemize.add_item(NoEscape(_safe_note(note)))
 
     # ── Generate PDF ──
-    temp_dir = tempfile.mkdtemp()
-    filepath = os.path.join(temp_dir, "slab_report")
-    doc.generate_pdf(filepath, clean_tex=False)
-
-    with open(filepath + ".pdf", "rb") as f:
-        pdf_bytes = f.read()
+    with tempfile.TemporaryDirectory() as temp_dir:
+        filepath = os.path.join(temp_dir, "slab_report")
+        doc.generate_pdf(filepath, clean_tex=False)
+        with open(filepath + ".pdf", "rb") as f:
+            pdf_bytes = f.read()
 
     return pdf_bytes

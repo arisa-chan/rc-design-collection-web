@@ -4,6 +4,7 @@
 ACI 318M-25 Slab Design Library using OpenSeesPy FEA
 """
 
+import asyncio
 import math
 from typing import Dict, Tuple, List, Optional
 from dataclasses import dataclass
@@ -17,6 +18,10 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import io
 import base64
+
+# Global lock: OpenSeesPy uses a singleton C++ global state; only one model
+# may be built and analysed at a time to prevent cross-request corruption.
+_opensees_lock: asyncio.Lock = asyncio.Lock()
 
 try:
     import openseespy.opensees as ops
@@ -120,8 +125,18 @@ class ACI318M25SlabDesign:
         self.aci = ACI318M25()
         self.phi_factors = {'flexure': 0.90, 'shear': 0.75}
 
-    def _run_opensees_analysis(self, geom: SlabGeometry, mat_props: MaterialProperties, load_mpa: float,
-                               is_service: bool = False) -> Tuple[SlabMoments, float, List[str], dict]:
+    async def _run_opensees_analysis(self, geom: SlabGeometry, mat_props: MaterialProperties, load_mpa: float,
+                                     is_service: bool = False) -> Tuple[SlabMoments, float, List[str], dict]:
+        """Async wrapper that serialises all OpenSees calls behind a global lock."""
+        import functools
+        loop = asyncio.get_event_loop()
+        async with _opensees_lock:
+            return await loop.run_in_executor(
+                None, functools.partial(self._run_opensees_analysis_sync, geom, mat_props, load_mpa, is_service)
+            )
+
+    def _run_opensees_analysis_sync(self, geom: SlabGeometry, mat_props: MaterialProperties, load_mpa: float,
+                                    is_service: bool = False) -> Tuple[SlabMoments, float, List[str], dict]:
         notes = []
         if not OPENSEES_AVAILABLE:
             raise ImportError("OpenSeesPy is required. Run `pip install openseespy`.")
@@ -361,17 +376,17 @@ class ACI318M25SlabDesign:
             Z = grid_data[grid_key]
             if key == 'deflection': Z = np.abs(Z)
 
-            plt.figure(figsize=(5, 4.5))
-            cs = plt.contourf(X, Y, Z, levels=20, cmap=cmap)
-            plt.colorbar(cs)
-            plt.title(title, fontsize=12, fontweight='bold', color='#111827')
-            plt.xlabel("X (mm)")
-            plt.ylabel("Y (mm)")
-            plt.tight_layout()
+            fig, ax = plt.subplots(figsize=(5, 4.5))
+            cs = ax.contourf(X, Y, Z, levels=20, cmap=cmap)
+            fig.colorbar(cs, ax=ax)
+            ax.set_title(title, fontsize=12, fontweight='bold', color='#111827')
+            ax.set_xlabel("X (mm)")
+            ax.set_ylabel("Y (mm)")
+            fig.tight_layout()
 
             buf = io.BytesIO()
-            plt.savefig(buf, format='png', dpi=120)
-            plt.close()
+            fig.savefig(buf, format='png', dpi=120)
+            plt.close(fig)
             buf.seek(0)
             plots[key] = base64.b64encode(buf.read()).decode('utf-8')
         return plots
@@ -461,10 +476,10 @@ class ACI318M25SlabDesign:
         # Fallback to minimum if reinforcement not yet designed
         return self._calculate_minimum_slab_reinforcement(1000, geometry.thickness, fy)
 
-    def perform_complete_slab_design(self, geometry: SlabGeometry, loads: SlabLoads,
-                                     material_props: MaterialProperties,
-                                     preferred_bottom_bar: str = "D12",
-                                     preferred_top_bar: str = "D12") -> SlabAnalysisResult:
+    async def perform_complete_slab_design(self, geometry: SlabGeometry, loads: SlabLoads,
+                                           material_props: MaterialProperties,
+                                           preferred_bottom_bar: str = "D12",
+                                           preferred_top_bar: str = "D12") -> SlabAnalysisResult:
         design_notes = ["Analysis performed using OpenSeesPy ShellMITC4 3D finite element model."]
 
         w_u_mpa = ((loads.self_weight + loads.superimposed_dead) * loads.load_factors.get('D',
@@ -475,14 +490,14 @@ class ACI318M25SlabDesign:
         w_tot_mpa = (loads.self_weight + loads.superimposed_dead + loads.live_load) / 1000.0
 
         # RUN 1: Ultimate Load
-        moments, _, fea_notes, ult_grid = self._run_opensees_analysis(geometry, material_props, w_u_mpa,
-                                                                      is_service=False)
+        moments, _, fea_notes, ult_grid = await self._run_opensees_analysis(geometry, material_props, w_u_mpa,
+                                                                            is_service=False)
         design_notes.extend(fea_notes)
 
         # RUN 2-4: Service Load Cases (dead, sustained, total)
-        moments_d, _, _, d_grid = self._run_opensees_analysis(geometry, material_props, w_dead_mpa, is_service=True)
-        moments_sus, _, _, sus_grid = self._run_opensees_analysis(geometry, material_props, w_sus_mpa, is_service=True)
-        moments_tot, _, _, tot_grid = self._run_opensees_analysis(geometry, material_props, w_tot_mpa, is_service=True)
+        moments_d, _, _, d_grid = await self._run_opensees_analysis(geometry, material_props, w_dead_mpa, is_service=True)
+        moments_sus, _, _, sus_grid = await self._run_opensees_analysis(geometry, material_props, w_sus_mpa, is_service=True)
+        moments_tot, _, _, tot_grid = await self._run_opensees_analysis(geometry, material_props, w_tot_mpa, is_service=True)
 
         # Design reinforcement BEFORE deflection check so Icr uses actual provided As
         bx, sx = self.design_flexural_reinforcement(moments.moment_x_positive, geometry.effective_depth_x,

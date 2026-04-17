@@ -5,19 +5,20 @@ from pydantic import BaseModel
 import json
 import hashlib
 import os
-import pickle
 from datetime import date
 
 from aci318m25 import MaterialProperties
 from aci318m25_complete import ACI318M25MemberLibrary
 from aci318m25_footing import (
     ACI318M25FootingDesign,
+    FootingAnalysisResult,
     FootingGeometry,
     FootingLoads,
     SoilProperties,
     FootingType,
 )
 from footing_pdf import generate_footing_report
+from footing_manual import generate_footing_manual
 from shared import blueprint_layout
 
 base_aci_lib = ACI318M25MemberLibrary()
@@ -42,30 +43,35 @@ os.makedirs(_FOOTING_CACHE_DIR, exist_ok=True)
 
 
 def _footing_cache_key(data, geom, loads, soil, mat):
+    def r(v):
+        return round(v, 3) if isinstance(v, float) else v
+
     payload = (
-        data.length,
-        data.width,
-        data.thickness,
-        data.cover,
-        data.col_w,
-        data.col_d,
-        data.ecc_x,
-        data.ecc_y,
-        data.fc_prime,
-        data.fy,
-        data.soil_qa,
-        data.soil_ks,
-        data.soil_depth,
-        data.soil_unit_weight,
-        data.soil_friction_angle,
-        data.surcharge_dl,
-        data.surcharge_ll,
-        data.pu_ult,
-        data.mux_ult,
-        data.muy_ult,
-        data.pu_srv,
-        data.mux_srv,
-        data.muy_srv,
+        r(data.length),
+        r(data.width),
+        r(data.thickness),
+        r(data.cover),
+        r(data.col_w),
+        r(data.col_d),
+        r(data.ecc_x),
+        r(data.ecc_y),
+        r(data.fc_prime),
+        r(data.fy),
+        r(data.soil_qa),
+        r(data.soil_ks),
+        r(data.soil_depth),
+        r(data.soil_unit_weight),
+        r(data.soil_friction_angle),
+        r(data.surcharge_dl),
+        r(data.surcharge_ll),
+        r(data.pu_ult),
+        r(data.mux_ult),
+        r(data.muy_ult),
+        r(data.shear_x),
+        r(data.shear_y),
+        r(data.pu_srv),
+        r(data.mux_srv),
+        r(data.muy_srv),
         data.bottom_bar_size,
         data.top_bar_size,
     )
@@ -74,22 +80,25 @@ def _footing_cache_key(data, geom, loads, soil, mat):
 
 
 def _footing_cache_path(key: str) -> str:
-    return os.path.join(_FOOTING_CACHE_DIR, f"{key}.pkl")
+    return os.path.join(_FOOTING_CACHE_DIR, f"{key}.json")
 
 
 def _load_footing_cache(key: str):
     path = _footing_cache_path(key)
     if os.path.exists(path):
-        with open(path, "rb") as f:
-            return pickle.load(f)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return FootingAnalysisResult.from_dict(json.load(f))
+        except Exception:
+            return None
     return None
 
 
 def _save_footing_cache(key: str, value):
     path = _footing_cache_path(key)
     try:
-        with open(path, "wb") as f:
-            pickle.dump(value, f)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(value.to_dict(), f)
     except Exception:
         pass
 
@@ -134,6 +143,8 @@ class FootingDesignModel(BaseModel):
     pu_ult: float = AirField(default=1500.0)
     mux_ult: float = AirField(default=150.0)
     muy_ult: float = AirField(default=80.0)
+    shear_x: float = AirField(default=0.0)
+    shear_y: float = AirField(default=0.0)
     pu_srv: float = AirField(default=1050.0)
     mux_srv: float = AirField(default=105.0)
     muy_srv: float = AirField(default=55.0)
@@ -629,6 +640,26 @@ def setup_footing_routes(app):
                                     ),
                                     class_="form-group",
                                 ),
+                                air.Div(
+                                    air.Label("Shear Vx (kN)"),
+                                    air.Input(
+                                        type="number",
+                                        name="shear_x",
+                                        value=str(data.shear_x),
+                                        step="any",
+                                    ),
+                                    class_="form-group",
+                                ),
+                                air.Div(
+                                    air.Label("Shear Vy (kN)"),
+                                    air.Input(
+                                        type="number",
+                                        name="shear_y",
+                                        value=str(data.shear_y),
+                                        step="any",
+                                    ),
+                                    class_="form-group",
+                                ),
                                 class_="section-box",
                             ),
                             air.Div(
@@ -859,8 +890,8 @@ def setup_footing_routes(app):
                 data.pu_ult,
                 data.mux_ult,
                 data.muy_ult,
-                0,
-                0,
+                data.shear_x,
+                data.shear_y,
                 data.pu_srv,
                 data.mux_srv,
                 data.muy_srv,
@@ -881,7 +912,7 @@ def setup_footing_routes(app):
             if cached_res is not None:
                 res = cached_res
             else:
-                res = engine.perform_complete_design(
+                res = await engine.perform_complete_design(
                     geom,
                     loads,
                     soil,
@@ -1641,8 +1672,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 data.pu_ult,
                 data.mux_ult,
                 data.muy_ult,
-                0,
-                0,
+                data.shear_x,
+                data.shear_y,
                 data.pu_srv,
                 data.mux_srv,
                 data.muy_srv,
@@ -1656,7 +1687,7 @@ document.addEventListener('DOMContentLoaded', function() {
             res = _load_footing_cache(cache_key)
 
             if res is None:
-                res = engine.perform_complete_design(
+                res = await engine.perform_complete_design(
                     geom,
                     loads,
                     soil,
@@ -1679,3 +1710,12 @@ document.addEventListener('DOMContentLoaded', function() {
             return AirResponse(
                 content=f"Error generating PDF: {str(e)}", status_code=500
             )
+
+    @app.get("/footing/manual")
+    def footing_manual_route(request: air.Request):
+        pdf_bytes = generate_footing_manual()
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": 'inline; filename="rc_footing_designer_manual.pdf"'},
+        )

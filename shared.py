@@ -1,4 +1,11 @@
+import os
 import air
+from itsdangerous import URLSafeSerializer
+
+# Secret key for signing cookies. Set RC_SECRET_KEY in the environment for
+# production. The fallback is only safe for local development.
+_SECRET_KEY = os.environ.get("RC_SECRET_KEY", "rc-design-collection-dev-secret-change-me")
+cookie_serializer = URLSafeSerializer(_SECRET_KEY, salt="rc-cookie")
 
 BLUEPRINT_CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=JetBrains+Mono:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap');

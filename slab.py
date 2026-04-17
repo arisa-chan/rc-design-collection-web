@@ -5,14 +5,16 @@ import math
 import json
 from datetime import date
 from starlette.responses import Response
+from itsdangerous import BadSignature
 
 from aci318m25 import MaterialProperties
 from aci318m25_slab import (
     ACI318M25SlabDesign, SlabGeometry, SlabLoads,
     LoadPattern, EdgeCondition, EdgeSupport, EdgeContinuity
 )
-from shared import blueprint_layout
+from shared import blueprint_layout, cookie_serializer
 from slab_pdf import generate_slab_report
+from slab_manual import generate_slab_manual
 
 
 class SlabDesignModel(BaseModel):
@@ -231,8 +233,8 @@ def setup_slab_routes(app):
         saved_inputs = request.cookies.get("slab_inputs")
         if saved_inputs:
             try:
-                data = SlabDesignModel(**json.loads(saved_inputs))
-            except Exception:
+                data = SlabDesignModel(**cookie_serializer.loads(saved_inputs))
+            except (BadSignature, Exception):
                 pass
 
         if not data.proj_date: data.proj_date = date.today().strftime("%Y-%m-%d")
@@ -328,7 +330,7 @@ def setup_slab_routes(app):
     @app.post("/slab/design")
     async def slab_design(request: air.Request):
         form_data = await request.form()
-        cookie_data = json.dumps(dict(form_data))
+        cookie_data = cookie_serializer.dumps(dict(form_data))
 
         try:
             data = SlabDesignModel(**form_data)
@@ -373,9 +375,9 @@ def setup_slab_routes(app):
                 load_pattern=LoadPattern.UNIFORM, load_factors={'D': 1.2, 'L': 1.6}
             )
 
-            res = engine.perform_complete_slab_design(geom, loads, mat_props,
-                                                       preferred_bottom_bar=data.bottom_bar_size,
-                                                       preferred_top_bar=data.top_bar_size)
+            res = await engine.perform_complete_slab_design(geom, loads, mat_props,
+                                                              preferred_bottom_bar=data.bottom_bar_size,
+                                                              preferred_top_bar=data.top_bar_size)
 
             status_util = "#16A34A" if res.utilization_ratio <= 1.0 else "#DC2626"
 
@@ -536,7 +538,7 @@ def setup_slab_routes(app):
                 ), report_content
             )), media_type="text/html")
 
-            resp.set_cookie("slab_inputs", cookie_data, max_age=2592000)
+            resp.set_cookie("slab_inputs", cookie_data, max_age=2592000, httponly=True, samesite="lax")
             return resp
 
         except Exception as e:
@@ -560,7 +562,7 @@ def setup_slab_routes(app):
             )
 
         try:
-            data_dict = json.loads(cookie_inputs)
+            data_dict = cookie_serializer.loads(cookie_inputs)
             data = SlabDesignModel(**data_dict)
 
             if not data.proj_date:
@@ -637,7 +639,7 @@ def setup_slab_routes(app):
                 load_factors={"D": 1.2, "L": 1.6},
             )
 
-            res = engine.perform_complete_slab_design(
+            res = await engine.perform_complete_slab_design(
                 geom,
                 loads,
                 mat_props,
@@ -658,3 +660,12 @@ def setup_slab_routes(app):
             return AirResponse(
                 content=f"Error generating PDF: {str(e)}", status_code=500
             )
+
+    @app.get("/slab/manual")
+    def slab_manual_route(request: air.Request):
+        pdf_bytes = generate_slab_manual()
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": 'inline; filename="rc_slab_designer_manual.pdf"'},
+        )
