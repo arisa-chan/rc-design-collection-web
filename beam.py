@@ -1,7 +1,7 @@
 import air
 from air import AirField, AirResponse
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 import math
 import json
 from datetime import date
@@ -38,11 +38,19 @@ class BeamDesignModel(BaseModel):
     pref_stirrup: str = AirField(default="D10")
     pref_torsion: str = AirField(default="D12")
     fc_prime: float = AirField(default=28.0)
+    lambda_concrete: str = AirField(default="normal")  # normal | sand_lw | all_lw  (ACI 318M-25 §19.2.4)
     fy: float = AirField(default=420.0)
     fyt: float = AirField(default=420.0)
     aggregate_size: float = AirField(default=20.0)
+    cover: float = AirField(default=40.0)              # concrete cover (mm) — ACI 318M-25 Table 20.6.1.3
+    column_width: float = AirField(default=0.0)        # supporting col. width ⊥ beam (mm); 0 = skip §18.6.2.1(d)/§18.8
+    column_depth: float = AirField(default=0.0)        # supporting col. depth ∥ beam (mm); 0 = assume = column_width
+    beam_type: str = AirField(default="rectangular")   # rectangular | t_beam | l_beam | inverted_t
+    flange_width: float = AirField(default=0.0)        # effective flange width (mm); 0 for rectangular
+    flange_thickness: float = AirField(default=0.0)    # flange (slab) thickness (mm); 0 for rectangular
 
-    deflection_limit: str = AirField(default="240")
+    deflection_limit: str = AirField(default="240")      # long-term limit divisor (L/240 or L/480)
+    deflection_limit_live: str = AirField(default="360") # immediate live-load limit divisor (L/360 or L/240)
     generate_pdf: str = AirField(default="")
 
     # Left Support Forces
@@ -71,6 +79,74 @@ class BeamDesignModel(BaseModel):
     right_mdead: float = AirField(default=0.0)
     right_mlive: float = AirField(default=0.0)
 
+    @model_validator(mode='after')
+    def validate_geometry_and_materials(self):
+        errors = []
+
+        # Geometry
+        if self.width <= 0:
+            errors.append(f"Beam width must be positive (got {self.width} mm).")
+        if self.height <= 0:
+            errors.append(f"Beam depth must be positive (got {self.height} mm).")
+        if self.effective_depth <= 0:
+            errors.append(f"Effective depth must be positive (got {self.effective_depth} mm).")
+        if self.height > 0 and self.effective_depth >= self.height:
+            errors.append(
+                f"Effective depth ({self.effective_depth} mm) must be less than "
+                f"total depth ({self.height} mm).")
+        if self.cover <= 0:
+            errors.append(f"Concrete cover must be positive (got {self.cover} mm).")
+        if self.height > 0 and self.effective_depth <= self.cover:
+            errors.append(
+                f"Effective depth ({self.effective_depth} mm) ≤ cover ({self.cover} mm) — "
+                "check your inputs.")
+        if self.length <= 0:
+            errors.append(f"Span length must be positive (got {self.length} mm).")
+        if self.clear_span <= 0:
+            errors.append(f"Clear span must be positive (got {self.clear_span} mm).")
+        if self.length > 0 and self.clear_span >= self.length:
+            errors.append(
+                f"Clear span ({self.clear_span} mm) must be less than "
+                f"centre-to-centre span ({self.length} mm).")
+
+        # Materials
+        if self.fc_prime < 17.0:
+            errors.append(
+                f"f’c must be ≥ 17 MPa (ACI 318M-25 §19.2.1.1); got {self.fc_prime} MPa.")
+        if self.fc_prime > 105.0:
+            errors.append(
+                f"f’c must be ≤ 105 MPa (ACI 318M-25 §19.2.1.1); got {self.fc_prime} MPa.")
+        if self.fy <= 0:
+            errors.append(f"Longitudinal bar yield strength must be positive (got {self.fy} MPa).")
+        if self.fy > 690.0:
+            errors.append(
+                f"fy must be ≤ 690 MPa (ACI 318M-25 §20.2.2.4); got {self.fy} MPa.")
+        if self.fyt <= 0:
+            errors.append(f"Transverse bar yield strength must be positive (got {self.fyt} MPa).")
+        if self.fyt > 420.0:
+            errors.append(
+                f"fyt must be ≤ 420 MPa for shear/torsion (ACI 318M-25 §22.5.10.2); "
+                f"got {self.fyt} MPa.")
+        if self.aggregate_size <= 0:
+            errors.append(f"Aggregate size must be positive (got {self.aggregate_size} mm).")
+
+        # Service moments: non-negative
+        for field, label in [
+            ('mid_mdead',   'Midspan dead moment'),
+            ('mid_mlive',   'Midspan live moment'),
+            ('left_mdead',  'Left support dead moment'),
+            ('left_mlive',  'Left support live moment'),
+            ('right_mdead', 'Right support dead moment'),
+            ('right_mlive', 'Right support live moment'),
+        ]:
+            val = getattr(self, field)
+            if val < 0:
+                errors.append(f"{label} must be ≥ 0 (got {val} kN·m).")
+
+        if errors:
+            raise ValueError(" \u2022 ".join(errors))
+        return self
+
 
 # ----------------------------------------------------------------------
 # 2. OVERRIDE ENGINE & QTO ALGORITHMS
@@ -86,7 +162,17 @@ class ControlledBeamDesign(ACI318M25BeamDesign):
                                    stirrup_size: str = 'D10', aggregate_size: float = 25.0) -> list:
         if As_required <= 0: return []
         area = self.aci.get_bar_area(self.pref_main)
+        db = self.aci.get_bar_diameter(self.pref_main)
+        _, actual_stir = self._parse_stirrup(stirrup_size)
+        db_stir = self.aci.get_bar_diameter(actual_stir)
+        available_width = beam_geometry.width - 2 * beam_geometry.cover - 2 * db_stir
+        min_clear = max(25.0, db, (4.0 / 3.0) * aggregate_size)
+        # Maximum bars per layer that fit with minimum clear spacing (§25.8.1)
+        max_per_layer = max(2, math.floor((available_width + min_clear) / (db + min_clear)))
         num_bars = max(2, math.ceil(As_required / area))
+        # If two layers still not enough, upsize to the next bar in the base library
+        if math.ceil(num_bars / max_per_layer) > 2:
+            return super()._select_reinforcement_bars(As_required, beam_geometry, fy, stirrup_size, aggregate_size)
         return [self.pref_main] * num_bars
 
     def perform_complete_beam_design(self, mu_top: float, mu_bot: float, vu: float, beam_geometry: BeamGeometry,
@@ -330,18 +416,18 @@ def generate_beam_section_css(width, height, cover, stirrup_str, top_bars_list, 
     )
 
 
-def render_force_inputs(title, prefix, data, show_gravity=False, show_deflection=False):
+def render_force_inputs(title, prefix, data, show_gravity=False, show_service=False):
     fields = [
-        air.Div(air.Label("Factored -Mu [Top] (kN·m)"),
+        air.Div(air.Label("Factored -Mu [Top] (kN\u00b7m)"),
                 air.Input(type="number", name=f"{prefix}_mu_neg", value=str(getattr(data, f"{prefix}_mu_neg")),
                           step="any", required=True), class_="form-group"),
-        air.Div(air.Label("Factored +Mu [Bottom] (kN·m)"),
+        air.Div(air.Label("Factored +Mu [Bottom] (kN\u00b7m)"),
                 air.Input(type="number", name=f"{prefix}_mu_pos", value=str(getattr(data, f"{prefix}_mu_pos")),
                           step="any", required=True), class_="form-group"),
         air.Div(air.Label("Factored shear Vu (kN)"),
                 air.Input(type="number", name=f"{prefix}_vu", value=str(getattr(data, f"{prefix}_vu")), step="any",
                           required=True), class_="form-group"),
-        air.Div(air.Label("Factored torsion Tu (kN·m)"),
+        air.Div(air.Label("Factored torsion Tu (kN\u00b7m)"),
                 air.Input(type="number", name=f"{prefix}_tu", value=str(getattr(data, f"{prefix}_tu")), step="any",
                           required=True), class_="form-group")
     ]
@@ -351,16 +437,19 @@ def render_force_inputs(title, prefix, data, show_gravity=False, show_deflection
                                         step="any", required=True), class_="form-group"))
     else:
         fields.append(air.Input(type="hidden", name=f"{prefix}_vg", value="0"))
-    if show_deflection:
-        fields.append(air.Div(air.Label("Service dead moment (kN·m)"), air.Input(type="number", name=f"{prefix}_mdead",
-                                                                                 value=str(
-                                                                                     getattr(data, f"{prefix}_mdead")),
-                                                                                 step="any", required=True),
+    if show_service:
+        # Service moments are used for deflection calculations (ACI 318M-25 §24.2).
+        # For support sections, enter the service-level hogging moment magnitude at the face.
+        # If left as 0, the route will approximate them from factored moment ratios.
+        fields.append(air.Div(air.Label("Service dead moment (kN\u00b7m)"),
+                              air.Input(type="number", name=f"{prefix}_mdead",
+                                        value=str(getattr(data, f"{prefix}_mdead")),
+                                        step="any", min="0", required=True),
                               class_="form-group"))
-        fields.append(air.Div(air.Label("Service live moment (kN·m)"), air.Input(type="number", name=f"{prefix}_mlive",
-                                                                                 value=str(
-                                                                                     getattr(data, f"{prefix}_mlive")),
-                                                                                 step="any", required=True),
+        fields.append(air.Div(air.Label("Service live moment (kN\u00b7m)"),
+                              air.Input(type="number", name=f"{prefix}_mlive",
+                                        value=str(getattr(data, f"{prefix}_mlive")),
+                                        step="any", min="0", required=True),
                               class_="form-group"))
     else:
         fields.append(air.Input(type="hidden", name=f"{prefix}_mdead", value="0"))
@@ -506,6 +595,14 @@ def setup_beam_routes(app):
                             air.Div(air.Label("Concrete strength (MPa)"),
                                     air.Input(type="number", name="fc_prime", value=str(data.fc_prime), step="any",
                                               required=True), class_="form-group"),
+                            air.Div(air.Label("Concrete weight class"), air.Select(
+                                air.Option("Normal-weight (λ = 1.00)", value="normal",
+                                           selected=(data.lambda_concrete == "normal")),
+                                air.Option("Sand-lightweight (λ = 0.85)", value="sand_lw",
+                                           selected=(data.lambda_concrete == "sand_lw")),
+                                air.Option("All-lightweight (λ = 0.75)", value="all_lw",
+                                           selected=(data.lambda_concrete == "all_lw")),
+                                name="lambda_concrete"), class_="form-group"),
                             air.Div(air.Label("Main bar yield strength (MPa)"),
                                     air.Input(type="number", name="fy", value=str(data.fy), step="any", required=True),
                                     class_="form-group"),
@@ -515,6 +612,9 @@ def setup_beam_routes(app):
                             air.Div(air.Label("Max aggregate size (mm)"),
                                     air.Input(type="number", name="aggregate_size", value=str(data.aggregate_size),
                                               step="any", min="10", required=True), class_="form-group"),
+                            air.Div(air.Label("Concrete cover (mm)"),
+                                    air.Input(type="number", name="cover", value=str(data.cover),
+                                              step="any", min="20", required=True), class_="form-group"),
                             air.Div(air.Label("Moment frame system"), air.Select(
                                 air.Option("Ordinary (OMF)", value="ordinary",
                                            selected=(data.frame_system == "ordinary")),
@@ -533,12 +633,40 @@ def setup_beam_routes(app):
                                 *[air.Option(opt, selected=(data.pref_torsion == opt)) for opt in bar_opts],
                                 name="pref_torsion"), class_="form-group"),
 
-                            air.Div(air.Label("Long term deflection limit"), air.Select(
+                            air.Div(air.Label("Immediate live-load deflection limit"), air.Select(
+                                air.Option("L/360 (nonstructural elements likely damaged)", value="360",
+                                           selected=(str(data.deflection_limit_live) == "360")),
+                                air.Option("L/240 (non-sensitive / roof members)", value="240",
+                                           selected=(str(data.deflection_limit_live) == "240")),
+                                name="deflection_limit_live"), class_="form-group"),
+                            air.Div(air.Label("Long-term deflection limit"), air.Select(
                                 air.Option("L/240 (non-sensitive finishes)", value="240",
                                            selected=(str(data.deflection_limit) == "240")),
                                 air.Option("L/480 (sensitive finishes)", value="480",
                                            selected=(str(data.deflection_limit) == "480")), name="deflection_limit"),
                                     class_="form-group"),
+                            air.Div(air.Label("Section type"), air.Select(
+                                air.Option("Rectangular", value="rectangular",
+                                           selected=(data.beam_type == "rectangular")),
+                                air.Option("T-beam", value="t_beam",
+                                           selected=(data.beam_type == "t_beam")),
+                                air.Option("L-beam", value="l_beam",
+                                           selected=(data.beam_type == "l_beam")),
+                                air.Option("Inverted T", value="inverted_t",
+                                           selected=(data.beam_type == "inverted_t")),
+                                name="beam_type"), class_="form-group"),
+                            air.Div(air.Label("Effective flange width (mm) — T/L only"),
+                                    air.Input(type="number", name="flange_width", value=str(data.flange_width),
+                                              step="any", min="0"), class_="form-group"),
+                            air.Div(air.Label("Flange (slab) thickness (mm) — T/L only"),
+                                    air.Input(type="number", name="flange_thickness", value=str(data.flange_thickness),
+                                              step="any", min="0"), class_="form-group"),
+                            air.Div(air.Label("Column width \u22a5 beam (mm) — SMF \u00a718.8; 0 = skip"),
+                                    air.Input(type="number", name="column_width", value=str(data.column_width),
+                                              step="any", min="0"), class_="form-group"),
+                            air.Div(air.Label("Column depth \u2225 beam (mm) — 0 = same as width"),
+                                    air.Input(type="number", name="column_depth", value=str(data.column_depth),
+                                              step="any", min="0"), class_="form-group"),
 
                             class_="grid-3"
                         ), class_="card"
@@ -546,9 +674,9 @@ def setup_beam_routes(app):
                     air.Div(
                         air.H2("Loads"),
                         air.Div(
-                            render_force_inputs("Left support", "left", data, show_gravity=True),
-                            render_force_inputs("Midspan", "mid", data, show_deflection=True),
-                            render_force_inputs("Right support", "right", data, show_gravity=True),
+                            render_force_inputs("Left support", "left", data, show_gravity=True, show_service=True),
+                            render_force_inputs("Midspan", "mid", data, show_service=True),
+                            render_force_inputs("Right support", "right", data, show_gravity=True, show_service=True),
                             class_="grid-3"
                         ),
                         air.Button("Run Analysis", type="submit",
@@ -592,15 +720,30 @@ def setup_beam_routes(app):
 
         try:
             sdc_enum, frame_enum = SeismicDesignCategory(data.sdc), FrameSystem(data.frame_system)
-            cover = 40.0
+            cover = float(data.cover)
 
-            ec = base_aci_lib.aci.get_concrete_modulus(data.fc_prime)
+            _beam_type_map = {
+                'rectangular': BeamType.RECTANGULAR,
+                't_beam':      BeamType.T_BEAM,
+                'l_beam':      BeamType.L_BEAM,
+                'inverted_t':  BeamType.INVERTED_T,
+            }
+            beam_type_enum = _beam_type_map.get(data.beam_type, BeamType.RECTANGULAR)
+            flange_width = float(data.flange_width) if beam_type_enum != BeamType.RECTANGULAR else 0.0
+            flange_thickness = float(data.flange_thickness) if beam_type_enum != BeamType.RECTANGULAR else 0.0
+
+            _lambda_map = {'normal': 1.0, 'sand_lw': 0.85, 'all_lw': 0.75}
+            lambda_factor = _lambda_map.get(str(data.lambda_concrete), 1.0)
+            ec = base_aci_lib.aci.get_concrete_modulus(data.fc_prime, lambda_factor=lambda_factor)
             mat_props = MaterialProperties(fc_prime=data.fc_prime, fy=data.fy, fu=data.fy * 1.25, fyt=data.fyt,
-                                           fut=data.fyt * 1.25, es=200000.0, ec=ec, gamma_c=24.0, description=f"Custom")
+                                           fut=data.fyt * 1.25, es=200000.0, ec=ec, gamma_c=24.0,
+                                           lambda_factor=lambda_factor, description="Custom")
             beam_geom = BeamGeometry(length=data.length, width=data.width, height=data.height,
-                                     effective_depth=data.effective_depth, cover=cover, flange_width=0.0,
-                                     flange_thickness=0.0, beam_type=BeamType.RECTANGULAR, clear_span=data.clear_span,
-                                     sdc=sdc_enum, frame_system=frame_enum, aggregate_size=data.aggregate_size)
+                                     effective_depth=data.effective_depth, cover=cover,
+                                     flange_width=flange_width, flange_thickness=flange_thickness,
+                                     beam_type=beam_type_enum, clear_span=data.clear_span,
+                                     sdc=sdc_enum, frame_system=frame_enum, aggregate_size=data.aggregate_size,
+                                     column_width=float(data.column_width), column_depth=float(data.column_depth))
 
             custom_lib = ACI318M25MemberLibrary()
             custom_lib.beam_design = ControlledBeamDesign(data.pref_main, data.pref_stirrup, data.pref_torsion)
@@ -622,7 +765,7 @@ def setup_beam_routes(app):
                                                                            max_as_support=max_as_support)
             res_mid = custom_lib.beam_design.perform_complete_beam_design(data.mid_mu_neg, data.mid_mu_pos, data.mid_vu,
                                                                           beam_geom, mat_props,
-                                                                          service_moment=data.mid_mlive, tu=data.mid_tu,
+                                                                          service_moment=data.mid_mdead + data.mid_mlive, tu=data.mid_tu,
                                                                           gravity_shear=0.0, is_support=False,
                                                                           max_as_support=max_as_support)
             res_right = custom_lib.beam_design.perform_complete_beam_design(data.right_mu_neg, data.right_mu_pos,
@@ -712,10 +855,21 @@ def setup_beam_routes(app):
                 phi_v = custom_lib.beam_design.phi_factors['shear']
                 phi_t = custom_lib.beam_design.phi_factors['torsion']
 
+                # Fix #1: pass compression steel so doubly-reinforced capacity is correct
+                _, _stir_rc = custom_lib.beam_design._parse_stirrup(r.reinforcement.stirrups)
+                _db_stir_rc = custom_lib.beam_design.aci.get_bar_diameter(_stir_rc)
+                _db_top_rc = custom_lib.beam_design.aci.get_bar_diameter(
+                    r.reinforcement.top_bars[0] if r.reinforcement.top_bars else 'D16')
+                _db_bot_rc = custom_lib.beam_design.aci.get_bar_diameter(
+                    r.reinforcement.bottom_bars[0] if r.reinforcement.bottom_bars else 'D16')
+                _d_prime_top_rc = beam_geom.cover + _db_stir_rc + 0.5 * _db_top_rc
+                _d_prime_bot_rc = beam_geom.cover + _db_stir_rc + 0.5 * _db_bot_rc
                 r.moment_capacity_top = phi_f * custom_lib.beam_design._calculate_moment_capacity(
-                    r.reinforcement.top_area, beam_geom, mat_props)
+                    r.reinforcement.top_area, beam_geom, mat_props,
+                    As_prime=r.reinforcement.bottom_area, d_prime=_d_prime_bot_rc)
                 r.moment_capacity_bot = phi_f * custom_lib.beam_design._calculate_moment_capacity(
-                    r.reinforcement.bottom_area, beam_geom, mat_props)
+                    r.reinforcement.bottom_area, beam_geom, mat_props,
+                    As_prime=r.reinforcement.top_area, d_prime=_d_prime_top_rc)
 
                 actual_s = r.reinforcement.stirrup_spacing_hinge if is_support else r.reinforcement.stirrup_spacing
                 As_prov = max(r.reinforcement.top_area, r.reinforcement.bottom_area)
@@ -724,11 +878,14 @@ def setup_beam_routes(app):
                                                                                             actual_s, As_prov)
 
                 # Compute Vc for torsion interaction using ACI 318M-25 Table 22.5.5.1 (Av-aware)
+                # Fix #4: pass lambda_cc so lightweight-concrete correction is applied
                 Vc = custom_lib.beam_design._calculate_vc(beam_geom, mat_props,
-                                                         r.reinforcement.stirrups, actual_s, As_prov)  # N
+                                                         r.reinforcement.stirrups, actual_s, As_prov,
+                                                         mat_props.lambda_factor)  # N
                 if beam_geom.frame_system == FrameSystem.SPECIAL:
                     ve_component = r.capacity_shear_ve - gravity_v  # kN
-                    if ve_component >= 0.5 * vu:  # both in kN
+                    # Fix #2: compare against Ve (§18.6.5.1: Vc=0 when (Ve-Vg)>0.5Ve)
+                    if ve_component >= 0.5 * r.capacity_shear_ve:  # both in kN
                         Vc = 0.0
 
                 # Always compute torsion capacity — section has stirrups providing inherent
@@ -754,6 +911,35 @@ def setup_beam_routes(app):
             recalc(res_right, True, data.right_mu_neg, data.right_mu_pos, data.right_vu, data.right_tu, data.right_vg)
             # ----- END UNIFICATION ENGINE -----
 
+            # ----- SMF §18.6.3.2 post-design 25% rule check -----
+            # The pre-design max_as_support is computed from pure flexural steel.
+            # Torsion longitudinal steel (al_top/al_bot) added during design may increase the
+            # actual top/bottom areas beyond that estimate.  Recheck the 25% rule here using
+            # the actual provided (unified) areas and flag any face that falls short.
+            if frame_enum == FrameSystem.SPECIAL:
+                _max_as_actual = max(
+                    res_left.reinforcement.top_area, res_left.reinforcement.bottom_area,
+                    res_right.reinforcement.top_area, res_right.reinforcement.bottom_area)
+                _Mn_max_actual = custom_lib.beam_design._calculate_moment_capacity(
+                    _max_as_actual, beam_geom, mat_props)   # kN·m
+                _25pct_Mn = 0.25 * _Mn_max_actual
+                for _r, _is_sup in [(res_left, True), (res_right, True)]:
+                    _Mn_t = custom_lib.beam_design._calculate_moment_capacity(
+                        _r.reinforcement.top_area, beam_geom, mat_props)
+                    _Mn_b = custom_lib.beam_design._calculate_moment_capacity(
+                        _r.reinforcement.bottom_area, beam_geom, mat_props)
+                    if _Mn_t < _25pct_Mn:
+                        _r.design_notes.append(
+                            f"⚠ SMF §18.6.3.2 post-check: -Mn ({_Mn_t:.1f} kN·m) "
+                            f"< 25% of max joint face Mn ({_Mn_max_actual:.1f} kN·m). "
+                            "Torsion longitudinal steel increased net top As; add top bars.")
+                    if _Mn_b < _25pct_Mn:
+                        _r.design_notes.append(
+                            f"⚠ SMF §18.6.3.2 post-check: +Mn ({_Mn_b:.1f} kN·m) "
+                            f"< 25% of max joint face Mn ({_Mn_max_actual:.1f} kN·m). "
+                            "Torsion longitudinal steel increased net bottom As; add bottom bars.")
+            # ----- END SMF post-design check -----
+
             vol_concrete, area_formwork, total_kg, rebar_rows = calculate_qto(beam_geom, res_left, res_mid, res_right)
 
             # ---------------------------------------------------------
@@ -766,7 +952,7 @@ def setup_beam_routes(app):
             M_sus = M_d + 0.25 * M_l
             M_tot = M_d + M_l
 
-            fr = 0.62 * math.sqrt(data.fc_prime)
+            fr = 0.62 * mat_props.lambda_factor * math.sqrt(data.fc_prime)  # ACI 318M-25 §19.2.3 (modulus of rupture)
             Ec = mat_props.ec
             Ig = (data.width * (data.height ** 3)) / 12.0
             yt = data.height / 2.0
@@ -774,7 +960,18 @@ def setup_beam_routes(app):
 
             n = 200000.0 / Ec
             d = data.effective_depth
-            d_prime = max(40.0, data.height - data.effective_depth)
+            # Fix #5: d_prime = depth from compression face to compression-steel centroid.
+            # For sagging (span) the compression steel is top bars; for hogging (cantilever
+            # fixed end) the compression steel is bottom bars.  In both cases use the bar
+            # centroid from the *compression* face: cover + db_stir + 0.5*db_comp_bar.
+            _top_bar_defl = res_mid.reinforcement.top_bars[0] if res_mid.reinforcement.top_bars else data.pref_main
+            _bot_bar_defl = res_mid.reinforcement.bottom_bars[0] if res_mid.reinforcement.bottom_bars else data.pref_main
+            _, _stir_defl = custom_lib.beam_design._parse_stirrup(res_mid.reinforcement.stirrups)
+            _db_stir_defl = custom_lib.beam_design.aci.get_bar_diameter(_stir_defl)
+            # span beam: compression at top; cantilever fixed end: compression at bottom
+            _db_comp_defl = custom_lib.beam_design.aci.get_bar_diameter(
+                _bot_bar_defl if _is_cantilever else _top_bar_defl)
+            d_prime = cover + _db_stir_defl + 0.5 * _db_comp_defl
             b = data.width
 
             # Reuse cantilever flags already computed before the unification engine
@@ -843,11 +1040,11 @@ def setup_beam_routes(app):
 
             def calc_Ie(M_applied):
                 if M_applied <= 0: return Ig
-                if M_applied <= (2.0/3.0) * M_cr:
+                if M_applied <= M_cr:
                     return Ig
-                # ACI 318M-25 §24.2.3.5: Ie = Icr / (1 - ((2/3*Mcr)/Ma)^2 * (1 - Icr/Ig))
-                factor_m = ((2.0/3.0) * M_cr / M_applied) ** 2
-                Ie_calc = Icr / (1.0 - factor_m * (1.0 - Icr / Ig))
+                # Branson's formula — ACI 318M-25 §24.2.3.5 (matches _calculate_effective_ie in library)
+                ratio = M_cr / M_applied
+                Ie_calc = ratio ** 3 * Ig + (1.0 - ratio ** 3) * Icr
                 return max(Icr, min(Ie_calc, Ig))
 
             if is_cantilever:
@@ -883,15 +1080,34 @@ def setup_beam_routes(app):
                 Mu_left_neg = float(data.left_mu_neg)
                 Mu_right_neg = float(data.right_mu_neg)
 
-                if Mu_mid_pos > 0:
-                    scale_d = M_d / Mu_mid_pos
-                    M_A_d = -Mu_left_neg * scale_d
-                    M_B_d = -Mu_right_neg * scale_d
+                # Use directly-entered support service moments when available (exact, no
+                # approximation).  Fall back to factored-moment ratio only when both are zero.
+                _left_d  = float(data.left_mdead)
+                _left_l  = float(data.left_mlive)
+                _right_d = float(data.right_mdead)
+                _right_l = float(data.right_mlive)
+                left_has_service  = (_left_d  != 0.0 or _left_l  != 0.0)
+                right_has_service = (_right_d != 0.0 or _right_l != 0.0)
+
+                if left_has_service or right_has_service:
+                    M_A_d   = -_left_d
+                    M_B_d   = -_right_d
+                    M_A_sus = -(_left_d  + 0.25 * _left_l)
+                    M_B_sus = -(_right_d + 0.25 * _right_l)
+                    M_A_tot = -(_left_d  + _left_l)
+                    M_B_tot = -(_right_d + _right_l)
+                elif Mu_mid_pos > 0:
+                    # Approximation: assumes service/factored ratio is equal at all points.
+                    # Valid only for proportional loading.  Enter support service moments
+                    # in the Loads panel for an exact result.
+                    scale_d   = M_d   / Mu_mid_pos
                     scale_sus = M_sus / Mu_mid_pos
-                    M_A_sus = -Mu_left_neg * scale_sus
-                    M_B_sus = -Mu_right_neg * scale_sus
                     scale_tot = M_tot / Mu_mid_pos
-                    M_A_tot = -Mu_left_neg * scale_tot
+                    M_A_d   = -Mu_left_neg  * scale_d
+                    M_B_d   = -Mu_right_neg * scale_d
+                    M_A_sus = -Mu_left_neg  * scale_sus
+                    M_B_sus = -Mu_right_neg * scale_sus
+                    M_A_tot = -Mu_left_neg  * scale_tot
                     M_B_tot = -Mu_right_neg * scale_tot
                 else:
                     M_A_d = M_B_d = M_A_sus = M_B_sus = M_A_tot = M_B_tot = 0.0
@@ -916,10 +1132,11 @@ def setup_beam_routes(app):
 
             delta_long = delta_live + time_factor * delta_sus_imm
 
-            lim_live = data.length / 360
+            lim_live_divisor = float(data.deflection_limit_live)
+            lim_live = data.length / lim_live_divisor     # ACI 318M-25 Table 24.2.2: immediate live-load
 
             lim_long_divisor = float(data.deflection_limit)
-            lim_long = data.length / lim_long_divisor
+            lim_long = data.length / lim_long_divisor     # ACI 318M-25 Table 24.2.2: long-term
 
             status_live = "#16A34A" if delta_live <= lim_live else "#DC2626"
             status_long = "#16A34A" if delta_long <= lim_long else "#DC2626"

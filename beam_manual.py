@@ -13,6 +13,12 @@ from pylatex.utils import bold, italic
 
 
 # ---------------------------------------------------------------------------
+# Module version — update here; main.py imports this to keep the card in sync
+# ---------------------------------------------------------------------------
+BEAM_VERSION = "0.9 beta"
+
+
+# ---------------------------------------------------------------------------
 # Helper: emit a display equation block without the equation environment
 #         (avoids numbering issues when used inside boxes)
 # ---------------------------------------------------------------------------
@@ -82,7 +88,7 @@ def generate_beam_manual() -> bytes:
     doc.append(NoEscape(r'{\Huge \textbf{\textcolor{aciblue}{RC Beam Designer}}}\\[0.5em]'))
     doc.append(NoEscape(r'{\Large \textbf{User Manual}}\\[0.3em]'))
     doc.append(NoEscape(r'{\large \textcolor{acigray}{ACI 318M-25 Compliant Design Module}}\\[0.2em]'))
-    doc.append(NoEscape(r'{\normalsize Version 0.8.2 beta \quad \textcolor{acigray}{---} \quad April 2026}'))
+    doc.append(NoEscape(r'{\normalsize Version ' + BEAM_VERSION + r' \quad \textcolor{acigray}{---} \quad April 2026}'))
     doc.append(NoEscape(r'\end{center}'))
     doc.append(NoEscape(r'\vspace{2em}'))
     doc.append(NoEscape(r'\hrule'))
@@ -117,15 +123,23 @@ def generate_beam_manual() -> bytes:
     # ===================================================================
     with doc.create(Section('Scope and Limitations')):
         with doc.create(Itemize()) as lst:
-            lst.add_item(NoEscape(r'Rectangular cross-sections only (T-beam / L-beam flanges not activated).'))
-            lst.add_item(NoEscape(r'Normal-weight concrete assumed (\(\lambda = 1.0\)).'))
+            lst.add_item(NoEscape(r'Rectangular, T-beam, L-beam, and Inverted-T sections are supported. '
+                                  r'Effective flange width and flange thickness are user inputs.'))
+            lst.add_item(NoEscape(r'Normal-weight, sand-lightweight, and all-lightweight concrete are supported '
+                                  r'via the concrete weight class selector ('
+                                  r'\(\lambda\) per ACI 318M-25 \S19.2.4).'))
             lst.add_item(NoEscape(r'Forces are entered directly as factored demands '
                                   r'(\(M_u\), \(V_u\), \(T_u\)); no load-combination engine is included.'))
             lst.add_item(NoEscape(r'Three design zones only: left support, midspan, right support. '
                                   r'Reinforcement is automatically unified across zones for constructability.'))
-            lst.add_item(NoEscape(r'Deflection is computed from midspan service moments (dead + live).'))
+            lst.add_item(NoEscape(r'Deflection uses service moments entered directly by the user (dead and live '
+                                  r'at midspan, and optionally at supports). When support service moments are '
+                                  r'not provided they are estimated from the midspan demand ratio.'))
             lst.add_item(NoEscape(r'Development lengths are calculated but bar cut-off detailing is not automated.'))
-            lst.add_item(NoEscape(r'The module does \textbf{not} check beam-column joint shear.'))
+            lst.add_item(NoEscape(r'Beam-column joint shear is checked per ACI 318M-25 \S18.8 when column '
+                                  r'dimensions are provided (SMF only). '
+                                  r'A conservative \(\gamma = 1.0\) (unconfined joint) is assumed; '
+                                  r'revise per Table~18.8.4.1 as appropriate.'))
 
     # ===================================================================
     # 3. INPUT PARAMETERS
@@ -147,6 +161,10 @@ def generate_beam_manual() -> bytes:
                     ('Effective depth \\(d\\)', 'mm',
                      'Distance from extreme compression fibre to centroid of tension steel. '
                      'Typically \\(d = h - c_c - d_{\\mathrm{stirrup}} - d_b/2\\).'),
+                    ('Cover \\(c_c\\)', 'mm',
+                     'Clear concrete cover to the face of the outermost stirrup '
+                     '(ACI 318M-25 Table~20.6.1.3). '
+                     'Used to compute torsional centreline dimensions and compression steel centroid \\(d\\prime\\).'),
                     ('Center-to-center span \\(L\\)', 'mm', 'Overall beam span between support centrelines.'),
                     ('Clear span \\(L_n\\)', 'mm',
                      'Clear distance between column faces. Used for SMF capacity design shear.'),
@@ -154,6 +172,22 @@ def generate_beam_manual() -> bytes:
                      'Maximum nominal aggregate size. Drives minimum stirrup spacing '
                      '(\\(s \\geq 3\\,d_{\\mathrm{agg}}\\), ACI 318M-25 \\S26.4.2.1) and '
                      'minimum clear bar spacing.'),
+                    ('Beam type', '\\textemdash',
+                     'Cross-section shape: Rectangular, T-beam, L-beam, or Inverted-T. '
+                     'Governs whether flange properties are used in flexural capacity.'),
+                    ('Flange width \\(b_f\\)', 'mm',
+                     'Effective compression flange width for T-beam or L-beam sections. '
+                     'Ignored (set to 0) for rectangular sections.'),
+                    ('Flange thickness \\(h_f\\)', 'mm',
+                     'Slab or flange thickness for T-beam or L-beam sections. '
+                     'Ignored (set to 0) for rectangular sections.'),
+                    ('Column width \\(b_{\\mathrm{col}}\\)', 'mm',
+                     'Width of the supporting column perpendicular to the beam axis. '
+                     'Activates SMF \\S18.6.2.1(d) width-limit check and joint shear check \\S18.8. '
+                     'Set to 0 to skip both checks.'),
+                    ('Column depth \\(h_{\\mathrm{col}}\\)', 'mm',
+                     'Depth of the supporting column parallel to the beam axis. '
+                     'Defaults to column width when set to 0.'),
                 ]
                 for r in rows:
                     tbl.add_row([NoEscape(r[0]), NoEscape(r[1]), NoEscape(r[2])])
@@ -168,15 +202,21 @@ def generate_beam_manual() -> bytes:
                     ("\\(f'_c\\)", 'MPa', "Specified concrete compressive strength."),
                     ('\\(f_y\\)', 'MPa', 'Yield strength of longitudinal reinforcement.'),
                     ('\\(f_{yt}\\)', 'MPa', 'Yield strength of transverse reinforcement (stirrups).'),
+                    ('Concrete weight class \\(\\lambda\\)', '\\textemdash',
+                     'Lightweight modification factor (ACI 318M-25 \\S19.2.4): '
+                     'Normal-weight \\(\\lambda = 1.00\\), sand-lightweight \\(\\lambda = 0.85\\), '
+                     'all-lightweight \\(\\lambda = 0.75\\). '
+                     'Applied to \\(V_c\\), \\(T_{th}\\), \\(f_r\\), and \\(E_c\\).'),
                 ]
                 for r in rows:
                     tbl.add_row([NoEscape(r[0]), NoEscape(r[1]), NoEscape(r[2])])
                 tbl.add_hline()
             doc.append(NoEscape(r'\smallskip'))
             doc.append(NoEscape(
-                r'The elastic modulus of concrete is computed internally per ACI 318M-25 Eq.\,(19.2.2.1b): '
+                r'The elastic modulus of concrete is computed internally. '
+                r'For the weight class selected, the standard formula is scaled by \(\lambda\):'
             ))
-            doc.append(_eq(r"E_c = 4700\,\sqrt{f'_c} \quad [\mathrm{MPa}]"))
+            doc.append(_eq(r"E_c = 4700\,\lambda\,\sqrt{f'_c} \quad [\mathrm{MPa}]"))
 
         with doc.create(Subsection('Seismic Classification')):
             with doc.create(LongTable('p{4.5cm} p{9cm}')) as tbl:
@@ -224,6 +264,13 @@ def generate_beam_manual() -> bytes:
                      'Typically the shear from factored gravity loads alone (no seismic).'),
                     ('\\(M_D\\)', 'kN·m', 'Service (unfactored) dead-load moment at midspan (deflection check).'),
                     ('\\(M_L\\)', 'kN·m', 'Service (unfactored) live-load moment at midspan (deflection check).'),
+                    ('\\(M_{D,L}\\) / \\(M_{D,R}\\)', 'kN·m',
+                     'Service dead-load moment at the left / right support (optional). '
+                     'Enter as a positive value (the solver treats support moments as hogging). '
+                     'When zero, support moments are estimated from the midspan demand ratio.'),
+                    ('\\(M_{L,L}\\) / \\(M_{L,R}\\)', 'kN·m',
+                     'Service live-load moment at the left / right support (optional). '
+                     'Same sign convention as \\(M_{D,L}\\) / \\(M_{D,R}\\).'),
                 ]
                 for r in rows:
                     tbl.add_row([NoEscape(r[0]), NoEscape(r[1]), NoEscape(r[2])])
@@ -377,7 +424,7 @@ def generate_beam_manual() -> bytes:
                 ))
                 doc.append(NoEscape(
                     r'\(\rho_w = A_s / (b_w d)\) is the longitudinal tensile reinforcement ratio. '
-                    r'For the current implementation \(\lambda = 1.0\) (normal-weight concrete). '
+                    r'\(\lambda\) is the concrete weight class factor selected by the user (1.00, 0.85, or 0.75). '
                     r'The \(\lambda_s\) factor is always \(\leq 1.0\) and becomes governing for '
                     r'\(d > 250\)~mm.'
                 ))
@@ -423,9 +470,10 @@ def generate_beam_manual() -> bytes:
 
             with doc.create(Subsubsection('Geometric Limits — ACI 318M-25 §18.6.2')):
                 with doc.create(Itemize()) as lst:
-                    lst.add_item(NoEscape(r'Clear-span-to-depth ratio: \(L_n / d \geq 4.0\)'))
-                    lst.add_item(NoEscape(r'Width: \(b_w \geq 250\,\mathrm{mm}\)'))
-                    lst.add_item(NoEscape(r'Width-to-depth ratio: \(b_w / h \geq 0.30\)'))
+                    lst.add_item(NoEscape(r'Clear-span-to-depth ratio \S18.6.2.1(a): \(L_n / d \geq 4.0\)'))
+                    lst.add_item(NoEscape(r'Width \S18.6.2.1(b): \(b_w \geq 0.30\,h\) and \(b_w \geq 250\,\mathrm{mm}\)'))
+                    lst.add_item(NoEscape(r'Column-relative width \S18.6.2.1(d) (requires column dimensions): '
+                                         r'\[b_w \leq b_{\mathrm{col}} + 2\min(b_{\mathrm{col}},\;0.75\,h_{\mathrm{col}})\]'))
 
             with doc.create(Subsubsection('Longitudinal Reinforcement — ACI 318M-25 §18.6.3')):
                 doc.append(NoEscape(r'At each joint face (support) the following must hold:'))
@@ -483,17 +531,43 @@ def generate_beam_manual() -> bytes:
                     r's_{\mathrm{hinge}} \leq \min\!\left(\frac{d}{4},\; 6\,d_{b,\mathrm{main}},\; 150\,\mathrm{mm}\right)'
                 ))
 
+            with doc.create(Subsubsection('Beam-Column Joint Shear — ACI 318M-25 §18.8')):
+                doc.append(NoEscape(
+                    r'When column dimensions are provided the factored joint shear force is computed '
+                    r'conservatively from the probable beam bar forces, with the column shear taken as '
+                    r'zero (upper-bound approach per ACI 318M-25 \S18.8.3.1):'
+                ))
+                doc.append(_eq(r'V_j = 1.25\,f_y\,(A_{s,\mathrm{top}} + A_{s,\mathrm{bot}})'))
+                doc.append(NoEscape(
+                    r'The effective joint area uses the joint width \(b_j\) per '
+                    r'ACI 318M-25 \S18.8.4.3 (concentric beam assumed):'
+                ))
+                doc.append(_eq(
+                    r'b_j = \min(b_w + h_{\mathrm{col}},\; b_{\mathrm{col}}), \qquad '
+                    r'A_j = b_j \cdot h_{\mathrm{col}}'
+                ))
+                doc.append(NoEscape(r'Joint shear capacity (\(\varphi = 0.85\), ACI 318M-25 \S18.8.4.1):'))
+                doc.append(_eq(
+                    r"\varphi V_{nj} = 0.85\,\gamma\,\min\!\left(\sqrt{f'_c},\;8.3\right)\,A_j"
+                ))
+                doc.append(NoEscape(
+                    r'The confinement factor \(\gamma\) defaults to \(1.0\) (conservative --- '
+                    r'``other\" joint per Table~18.8.4.1). '
+                    r'Revise \(\gamma\) to \(1.25\) or \(1.7\) for more-confined joints. '
+                    r'The design notes report the joint DCR and flag when \(V_j > \varphi V_{nj}\).'
+                ))
+
         # -------------------------------------------------------------- 4.5 Deflection
         with doc.create(Subsection('Deflection Check')):
 
-            with doc.create(Subsubsection('Effective Moment of Inertia — ACI 318M-25 §24.2.3.5')):
+            with doc.create(Subsubsection("Effective Moment of Inertia \u2014 Branson's Formula")):
                 doc.append(NoEscape(
-                    r'The effective moment of inertia \(I_e\) interpolates between '
-                    r'\(I_g\) (uncracked) and \(I_{cr}\) (fully cracked):'
+                    r"The effective moment of inertia \(I_e\) is computed using Branson's formula, "
+                    r'which interpolates between \(I_g\) (uncracked) and \(I_{cr}\) (fully cracked):'
                 ))
                 doc.append(_eq(
-                    r'I_e = \frac{I_{cr}}{1 - \!\left(\dfrac{\tfrac{2}{3}M_{cr}}{M_a}\right)^{\!2} '
-                    r'\!\left(1 - \dfrac{I_{cr}}{I_g}\right)}'
+                    r'I_e = \!\left(\frac{M_{cr}}{M_a}\right)^{\!3}\!I_g '
+                    r'+ \left[1 - \!\left(\frac{M_{cr}}{M_a}\right)^{\!3}\right]\!I_{cr}'
                     r'\qquad (I_{cr} \leq I_e \leq I_g)'
                 ))
                 doc.append(NoEscape(r'where the cracking moment is:'))
@@ -515,8 +589,9 @@ def generate_beam_manual() -> bytes:
                 ))
                 doc.append(NoEscape(
                     r'\(M_A\), \(M_C\), \(M_B\) are service moments at the left support, midspan, '
-                    r'and right support respectively. Support moments are scaled from the given '
-                    r'ultimate-to-service ratio of the midspan moment.'
+                    r'and right support respectively. Support moments are taken from direct user input '
+                    r'(\(M_{D,L}\), \(M_{L,L}\) and \(M_{D,R}\), \(M_{L,R}\)) when provided; '
+                    r'otherwise they are estimated from the ultimate-to-service ratio of the midspan moment.'
                 ))
                 doc.append(NoEscape(r'\medskip'))
                 doc.append(NoEscape(r'\textbf{Cantilever} --- tip deflection via Simpson\'s rule:'))
@@ -548,8 +623,9 @@ def generate_beam_manual() -> bytes:
                     tbl.add_hline()
                     tbl.add_row([bold('Limit'), bold('Description')])
                     tbl.add_hline()
-                    tbl.add_row([NoEscape(r'\(\delta_{\mathrm{live}} \leq L/360\)'),
-                                 NoEscape(r'Immediate live-load deflection (ACI 318M-25 Table~24.2.2).')])
+                    tbl.add_row([NoEscape(r'\(\delta_{\mathrm{live}} \leq L/360\) or \(L/240\)'),
+                                 NoEscape(r'Immediate live-load deflection limit (ACI 318M-25 Table~24.2.2). '
+                                          r'User-selectable: \(L/360\) (default, typical floors) or \(L/240\) (relaxed).')])
                     tbl.add_row([NoEscape(r'\(\delta_{\mathrm{long}} \leq L/240\)'),
                                  NoEscape(r'Long-term deflection for non-sensitive finishes (user-selectable).')])
                     tbl.add_row([NoEscape(r'\(\delta_{\mathrm{long}} \leq L/480\)'),

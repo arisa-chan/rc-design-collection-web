@@ -75,14 +75,26 @@ def generate_beam_report(data, mat_props, beam_geom, res_left, res_mid, res_righ
     doc.append(NoEscape(r'\vspace*{1em}'))
     
     # Material Props
-    with doc.create(Section("Material & Geometry")):
+    _lambda_labels = {'normal': '1.00 (normal-weight)', 'sand_lw': '0.85 (sand-lightweight)', 'all_lw': '0.75 (all-lightweight)'}
+    _lambda_str = _lambda_labels.get(str(data.lambda_concrete), str(mat_props.lambda_factor))
+    _beam_type_labels = {'rectangular': 'Rectangular', 't_beam': 'T-beam', 'l_beam': 'L-beam', 'inverted_t': 'Inverted T'}
+    _beam_type_str = _beam_type_labels.get(str(data.beam_type), str(data.beam_type))
+
+    with doc.create(Section("Material \& Geometry")):
         with doc.create(Itemize()) as itemize:
             itemize.add_item(NoEscape(fr"Concrete strength, $f'_c = {data.fc_prime}$ MPa"))
+            itemize.add_item(NoEscape(fr"Concrete weight class: $\\lambda = $ {_lambda_str} (ACI 318M-25 \\S19.2.4)"))
             itemize.add_item(NoEscape(fr"Main rebar yield strength, $f_y = {data.fy}$ MPa"))
             itemize.add_item(NoEscape(fr"Stirrup yield strength, $f_{{yt}} = {data.fyt}$ MPa"))
-            itemize.add_item(NoEscape(fr"Beam dimensions: width $b_w = {data.width}$ mm, height $h = {data.height}$ mm, effective depth $d = {data.effective_depth}$ mm"))
+            itemize.add_item(NoEscape(fr"Section type: {_beam_type_str}"))
+            itemize.add_item(NoEscape(fr"Beam dimensions: $b_w = {data.width}$ mm, $h = {data.height}$ mm, $d = {data.effective_depth}$ mm, cover $= {data.cover}$ mm"))
+            if str(data.beam_type) in ('t_beam', 'l_beam', 'inverted_t') and float(data.flange_width) > 0:
+                itemize.add_item(NoEscape(fr"Flange: effective width $b_e = {data.flange_width}$ mm, thickness $h_f = {data.flange_thickness}$ mm"))
             itemize.add_item(NoEscape(fr"Span length: $L = {data.length}$ mm, clear span $L_n = {data.clear_span}$ mm"))
-    
+            if float(data.column_width) > 0:
+                _col_depth = float(data.column_depth) if float(data.column_depth) > 0 else float(data.column_width)
+                itemize.add_item(NoEscape(fr"Supporting column: $b_{{col}} = {data.column_width}$ mm, $h_{{col}} = {_col_depth:.0f}$ mm (for joint shear check \\S18.8)"))
+
     def section_report(title, demands, res):
         with doc.create(Subsection(title)):
             doc.append(bold("Factored loads: "))
@@ -150,9 +162,11 @@ def generate_beam_report(data, mat_props, beam_geom, res_left, res_mid, res_righ
             phi_v = 0.75
             
             doc.append(NoEscape(r'\\'))
-            vc = 0.17 * math.sqrt(fc) * b * d / 1000.0
-            doc.append(Math(data=[NoEscape(fr"V_c = 0.17 \sqrt{{f'_c}} b_w d = 0.17 \times \sqrt{{{fc}}} \times {b} \times {d} \times 10^{{-3}} = {vc:.1f} \text{{ kN}}")]))
-            
+            # ACI 318M-25 §22.5.5.1 simplified (Table 22.5.5.1 row (a) / ignoring Av term for display);
+            # λ applied per §19.2.4.
+            _lam = mat_props.lambda_factor
+            vc = 0.17 * _lam * math.sqrt(fc) * b * d / 1000.0
+            doc.append(Math(data=[NoEscape(fr"V_c = 0.17 \lambda \sqrt{{f'_c}} b_w d = 0.17 \times {_lam:.2f} \times \sqrt{{{fc}}} \times {b} \times {d} \times 10^{{-3}} = {vc:.1f} \text{{ kN}}")]))
             vs = (av * fyt * d / s_val) / 1000.0
             doc.append(Math(data=[NoEscape(fr"V_s = \frac{{A_v f_{{yt}} d}}{{s}} = \frac{{{av:.1f} \times {fyt} \times {d}}}{{{s_val:.0f}}} \times 10^{{-3}} = {vs:.1f} \text{{ kN}}")]))
             
@@ -164,7 +178,7 @@ def generate_beam_report(data, mat_props, beam_geom, res_left, res_mid, res_righ
                 phi_t = 0.75
                 # Recalculate torsion properties for display
                 db_s = aci_tool.get_bar_diameter(s_size)
-                cover = 40.0 # From beam.py
+                cover = beam_geom.cover
                 x1 = b - 2*cover - db_s
                 y1 = data.height - 2*cover - db_s
                 aoh = x1 * y1
@@ -266,24 +280,30 @@ def generate_beam_report(data, mat_props, beam_geom, res_left, res_mid, res_righ
             doc.append(NoEscape(r"\\"))
             
             with doc.create(Subsection("Cracking and Inertia Properties")):
-                fr = 0.62 * math.sqrt(data.fc_prime)
-                doc.append(Math(data=[NoEscape(fr"f_r = 0.62 \sqrt{{f'_c}} = 0.62 \times \sqrt{{{data.fc_prime}}} = {fr:.2f} \text{{ MPa}}")]))
+                # Use lambda factor from material properties (ACI 318M-25 §19.2.3)
+                _lam_d = mat_props.lambda_factor
+                fr = 0.62 * _lam_d * math.sqrt(data.fc_prime)
+                if _lam_d < 1.0:
+                    doc.append(Math(data=[NoEscape(fr"f_r = 0.62 \lambda \sqrt{{f'_c}} = 0.62 \times {_lam_d:.2f} \times \sqrt{{{data.fc_prime}}} = {fr:.2f} \text{{ MPa}}")]))                
+                else:
+                    doc.append(Math(data=[NoEscape(fr"f_r = 0.62 \sqrt{{f'_c}} = 0.62 \times \sqrt{{{data.fc_prime}}} = {fr:.2f} \text{{ MPa}}")]))                
                 
                 ig = defl_data['I_g']
                 yt = data.height / 2.0
-                mcr = (fr * ig / yt) / 1e6
-                doc.append(Math(data=[NoEscape(fr"M_{{cr}} = \frac{{f_r I_g}}{{y_t}} = \frac{{{fr:.2f} \times {ig/1e6:.0f}\times 10^6}}{{{yt:.1f}}} \times 10^{{-6}} = {mcr:.1f} \text{{ kN-m}}")]))
+                # Use M_cr from defl_data when available (already lambda-corrected by route)
+                mcr = defl_data.get('M_cr', (fr * ig / yt) / 1e6)
+                doc.append(Math(data=[NoEscape(fr"M_{{cr}} = \frac{{f_r I_g}}{{y_t}} = \frac{{{fr:.2f} \times {ig/1e6:.0f}\times 10^6}}{{{yt:.1f}}} \times 10^{{-6}} = {mcr:.1f} \text{{ kN-m}}")]))                
                 
                 icr = defl_data['I_cr']
                 icr_note = " (fixed-end)" if is_cant else " (midspan)"
-                doc.append(Math(data=[NoEscape(fr"I_{{cr}}{icr_note} = {icr/1e6:.0f} \times 10^6 \text{{ mm}}^4")]))
+                doc.append(Math(data=[NoEscape(fr"I_{{cr}}{icr_note} = {icr/1e6:.0f} \times 10^6 \text{{ mm}}^4")]))                
 
-                ma = defl_data.get('M_a', mcr * 1.5) # Fallback if Ma not passed
-                doc.append(NoEscape(fr"Effective Inertia $I_e$ for $M_a = {ma:.1f}$ kN-m:"))
+                ma = defl_data.get('M_a', mcr * 1.5)
+                doc.append(NoEscape(fr"Effective Inertia $I_e$ (Branson, ACI 318M-25 \\S24.2.3.5) for $M_a = {ma:.1f}$ kN-m:"))
                 
                 ie = defl_data['I_e']
-                doc.append(Math(data=[NoEscape(r"I_e = \frac{I_{cr}}{1 - \left( \frac{(2/3) M_{cr}}{M_a} \right)^2 \left( 1 - \frac{I_{cr}}{I_g} \right)} \leq I_g")]))
-                doc.append(Math(data=[NoEscape(fr"I_e = {ie/1e6:.0f} \times 10^6 \text{{ mm}}^4")]))
+                # Branson's formula — consistent with the route's calc_Ie and _calculate_effective_ie
+                doc.append(Math(data=[NoEscape(r"I_e = \left(\frac{M_{cr}}{M_a}\right)^3 I_g + \left[1 - \left(\frac{M_{cr}}{M_a}\right)^3\right] I_{cr} \leq I_g")]))
 
             with doc.create(Subsection("Deflection Results")):
                 ec = mat_props.ec
@@ -295,8 +315,10 @@ def generate_beam_report(data, mat_props, beam_geom, res_left, res_mid, res_righ
                     doc.append(NoEscape(r"Midspan deflection via Simpson's rule:"))
                     doc.append(Math(data=[NoEscape(r"\delta_{mid} = \frac{L^2}{96 \, E_c \, I_e} \left( M_A + 10 \, M_C + M_B \right)")]))
                 
-                doc.append(Math(data=[NoEscape(fr"\Delta_L = {defl_data['delta_live']:.2f} \text{{ mm}} \quad (Limit: {defl_data['lim_live']:.1f} \text{{ mm}}) ")]))
-                doc.append(Math(data=[NoEscape(fr"\Delta_{{long}} = {defl_data['delta_long']:.2f} \text{{ mm}} \quad (Limit: {defl_data['lim_long']:.1f} \text{{ mm}}) ")]))
+                _live_div = int(round(data.length / defl_data['lim_live'])) if defl_data['lim_live'] > 0 else 360
+                _long_div = int(round(data.length / defl_data['lim_long'])) if defl_data['lim_long'] > 0 else 240
+                doc.append(Math(data=[NoEscape(fr"\Delta_L = {defl_data['delta_live']:.2f} \text{{ mm}} \quad \left( \text{{Limit }} L/{_live_div} = {defl_data['lim_live']:.1f} \text{{ mm}} \right) ")]))
+                doc.append(Math(data=[NoEscape(fr"\Delta_{{long}} = {defl_data['delta_long']:.2f} \text{{ mm}} \quad \left( \text{{Limit }} L/{_long_div} = {defl_data['lim_long']:.1f} \text{{ mm}} \right) ")]))
                 
                 status = "PASS" if defl_data['delta_live'] <= defl_data['lim_live'] and defl_data['delta_long'] <= defl_data['lim_long'] else "FAIL"
                 doc.append(bold(fr"Deflection Status: {status}"))

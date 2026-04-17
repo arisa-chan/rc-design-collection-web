@@ -72,6 +72,7 @@ class MaterialProperties:
     ec: float             # Modulus of elasticity of concrete (MPa)
     gamma_c: float        # Unit weight of concrete (kN/m³)
     description: str
+    lambda_factor: float = 1.0  # ACI 318M-25 §19.2.4: 1.0 NW, 0.85 sand-LW, 0.75 all-LW concrete
 
 class ACI318M25:
     
@@ -184,23 +185,39 @@ class ACI318M25:
             })
         return results
 
-    def calculate_development_length(self, bar_size: str, fc_prime: float, fy: float, modification_factors: Dict = None) -> float:
+    def calculate_development_length(self, bar_size: str, fc_prime: float, fy: float,
+                                      modification_factors: Dict = None,
+                                      cb: float = None, Ktr: float = 0.0) -> float:
         db = self.get_bar_diameter(bar_size)
         psi_t = modification_factors.get('top_bar', 1.0) if modification_factors else 1.0
-        psi_e = modification_factors.get('epoxy', 1.0) if modification_factors else 1.0  
+        psi_e = modification_factors.get('epoxy', 1.0) if modification_factors else 1.0
         psi_s = modification_factors.get('size', 1.0) if modification_factors else 1.0
         lambda_factor = modification_factors.get('lambda', 1.0) if modification_factors else 1.0
-        
-        numerator = fy * psi_t * psi_e * psi_s * lambda_factor
-        denominator = 25 * lambda_factor * math.sqrt(fc_prime)
-        ld = (numerator / denominator) * db
+        # ACI 318M-25 §25.5.2.2: grade factor ψg (1.15 for Grade 550, 1.0 otherwise)
+        psi_g = 1.15 if fy > 420.0 else 1.0
+        # ACI 318M-25 §25.5.2.3: confinement term (cb + Ktr)/db, capped at 2.5.
+        # cb = distance from bar centre to nearest concrete surface.
+        # Ktr = 40·Atr/(s·n); use 0 (conservative) when not explicitly computed.
+        if cb is not None:
+            confinement = min((cb + Ktr) / db, 2.5)
+        else:
+            confinement = 1.0  # conservative default: no confinement credit assumed
+        # ACI 318M-25 Table 25.5.2.1 (SI): ld/db = fy·ψt·ψe·ψg·ψs / (1.1·λ·√f'c·(cb+Ktr)/db)
+        ld = (fy * psi_t * psi_e * psi_g * psi_s * db) / (1.1 * lambda_factor * math.sqrt(fc_prime) * confinement)
         return max(ld, 300.0)
+
+    def calculate_beta1(self, fc_prime: float) -> float:
+        """Compression-zone factor β1 per ACI 318M-25 §22.2.2.3."""
+        if fc_prime <= 28.0:
+            return 0.85
+        elif fc_prime <= 55.0:
+            return 0.85 - 0.05 * (fc_prime - 28.0) / 7.0
+        else:
+            return 0.65
 
     def calculate_balanced_reinforcement_ratio(self, fc_prime: float, fy: float, beta1: float = None) -> float:
         if beta1 is None:
-            if fc_prime <= 28: beta1 = 0.85
-            elif fc_prime <= 55: beta1 = 0.85 - 0.05 * (fc_prime - 28) / 7
-            else: beta1 = 0.65
+            beta1 = self.calculate_beta1(fc_prime)
         es = 200000 
         ecu = 0.003  
         ey = fy / es  
@@ -212,10 +229,7 @@ class ACI318M25:
         return max(1.4 / fy, 0.25 * math.sqrt(fc_prime) / fy)
 
     def calculate_maximum_reinforcement_ratio(self, fc_prime: float, fy: float) -> float:
-        if fc_prime <= 28: beta1 = 0.85
-        elif fc_prime <= 55: beta1 = 0.85 - 0.05 * (fc_prime - 28) / 7
-        else: beta1 = 0.65
-        return (3.0 / 8.0) * 0.85 * fc_prime * beta1 / fy
+        return (3.0 / 8.0) * 0.85 * fc_prime * self.calculate_beta1(fc_prime) / fy
 
     def calculate_deflection_multiplier(self, rho: float, rho_prime: float = 0.0) -> float:
         return 2.0 / (1 + 50 * rho_prime)

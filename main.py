@@ -4,6 +4,7 @@ import column
 import slab
 import footing
 import prestress_beam
+from beam_manual import BEAM_VERSION as BEAM_VERSION
 from shared import blueprint_layout
 
 app = air.Air()
@@ -28,7 +29,7 @@ def index(request: air.Request):
                 air.Div(
                     air.Div(
                         air.H3("RC Beam Designer"),
-                        air.P("v0.8.4 beta.", style="margin-bottom: 20px; color: var(--text-secondary);"),
+                        air.P(f"v{BEAM_VERSION}.", style="margin-bottom: 20px; color: var(--text-secondary);"),
                         air.A("Launch", href="/beam", class_="button"),
                         air.A("User Manual", href="/beam/manual", target="_blank",
                               class_="button secondary"),
